@@ -1,0 +1,16 @@
+# TETRA Encryption Key File
+# Format: ALGORITHM:KEY_ID:HEX_KEY
+# 
+# Algorithm options: TEA1, TEA2, TEA3, TEA4
+# Key lengths:
+#   TEA1: 80 bits (10 bytes, 20 hex characters)
+#   TEA2: 128 bits (16 bytes, 32 hex characters)
+#   TEA3: 128 bits (16 bytes, 32 hex characters)
+#   TEA4: 128 bits (16 bytes, 32 hex characters)
+#
+# Example keys (DO NOT USE IN PRODUCTION - REPLACE WITH REAL KEYS):
+# TEA1:0:0123456789ABCDEF0123
+# TEA2:0:0123456789ABCDEF0123456789ABCDEF
+# TEA2:1:FEDCBA9876543210FEDCBA9876543210
+# TEA3:0:11111111111111111111111111111111
+# TEA4:0:22222222222222222222222222222222

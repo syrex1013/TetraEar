@@ -1,0 +1,40 @@
+/**************************************************************************
+*
+*	FILENAME				:	const_TETRA.tab
+*
+*	DESCRIPTION			:	Constants for speech channel coding and decoding
+*
+**************************************************************************/
+
+#define	N0_TETRA		     51 /* One Frame : Less sensitive class (class 0) */
+#define	N1_TETRA		     56 /* One Frame : Moderate sensitive (class 1) */
+#define	N2_TETRA		     30 /* One Frame : Most sensitive (class2) */
+#define	N0_2_TETRA		     102 /* Two Frames : Less sensitive class (class 0) */
+#define	N1_2_TETRA		     112 /* Two Frames : Moderate sensitive (class 1) */
+#define	N2_2_TETRA		     60 /* Two Frames : Most sensitive (class 2) */
+#define	N1_2_coded_TETRA	168 /* Two Frames after coding : size of class 1 after coding */
+#define	N2_2_coded_TETRA	162 /* Two Frames after coding : size of class 2 after coding including CRC bits, (K-1) bits to empty the encoder */
+
+#define	Length_vocoder_frame_TETRA	137 /* 30 ms speech frame at 4567 b/s */
+#define	Length_2_frames_TETRA		274 /* Two 30 ms speech frames */
+
+#define	SIZE_TAB_CRC1_TETRA	29	/* Amount of bits taken into account */
+#define	SIZE_TAB_CRC2_TETRA	29	/* In every of the 8 CRC bits */
+#define	SIZE_TAB_CRC3_TETRA	29
+#define	SIZE_TAB_CRC4_TETRA	30
+#define	SIZE_TAB_CRC5_TETRA	30
+#define	SIZE_TAB_CRC6_TETRA	29
+#define	SIZE_TAB_CRC7_TETRA	29
+#define	SIZE_TAB_CRC8_TETRA	35
+
+#define Fs_N0_Tot_TETRA            51
+#define Fs_N1_Tot_TETRA            56
+#define Fs_N2_Tot_TETRA	           30
+#define Fs_N1_Tot_coded_TETRA      84
+#define Fs_N2_Tot_coded_TETRA      81
+
+#define Fs_SIZE_TAB_CRC1_TETRA     16
+#define Fs_SIZE_TAB_CRC2_TETRA     16
+#define Fs_SIZE_TAB_CRC3_TETRA     16
+#define Fs_SIZE_TAB_CRC4_TETRA     16
+

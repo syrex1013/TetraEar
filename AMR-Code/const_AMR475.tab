@@ -1,0 +1,43 @@
+/**************************************************************************
+*
+*	FILENAME				:	const_AMR475.tab
+*
+*	DESCRIPTION			:	Constants for speech channel coding and decoding
+*
+**************************************************************************/
+
+#define	N0_AMR475		     45  /* One Frame : Less sensitive class (class 0) */
+#define	N1_AMR475		     30 /* One Frame : Moderate sensitive (class 1) */
+#define	N2_AMR475		     20 /* One Frame : Most sensitive (class2) */
+#define	N0_2_AMR475		    135 /* Three Frames : Less sensitive class (class 0) */
+#define	N1_2_AMR475		     90 /* Three Frames : Moderate sensitive (class 1) */
+#define	N2_2_AMR475		     60 /* Three Frames : Most sensitive (class 2) */
+#define	N1_2_coded_AMR475	135 /* Three Frames after coding : size of class 1 after coding */
+#define	N2_2_coded_AMR475	162 /* Three Frames after coding : size of class 2 after coding including CRC bits, (K-1) bits to empty the encoder */
+
+
+#define	Length_vocoder_frame_AMR475	95 /* 20 ms speech frame at 4750 b/s */
+#define	Length_2_frames_AMR475		285 /* Three 20ms speech frames */
+
+#define	SIZE_TAB_CRC1_AMR475	29	/* Amount of bits taken into account */
+#define	SIZE_TAB_CRC2_AMR475	29	/* In every of the 8 CRC bits */
+#define	SIZE_TAB_CRC3_AMR475	29
+#define	SIZE_TAB_CRC4_AMR475	30
+#define	SIZE_TAB_CRC5_AMR475	30
+#define	SIZE_TAB_CRC6_AMR475	29
+#define	SIZE_TAB_CRC7_AMR475	29
+#define	SIZE_TAB_CRC8_AMR475	35
+
+#define	Fs_SpFrms_per_TDMFrm_AMR475    2
+
+#define Fs_N0_Tot_AMR475          82       
+#define Fs_N1_Tot_AMR475          38
+#define Fs_N2_Tot_AMR475          36
+#define Fs_N1_Tot_coded_AMR475    57
+#define Fs_N2_Tot_coded_AMR475    77
+
+#define Fs_SIZE_TAB_CRC1_AMR475   19
+#define Fs_SIZE_TAB_CRC2_AMR475   19
+#define Fs_SIZE_TAB_CRC3_AMR475   19
+#define Fs_SIZE_TAB_CRC4_AMR475   19
+

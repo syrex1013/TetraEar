@@ -1,0 +1,437 @@
+Includes of the patches from osmocom-tetra, and also patches to log to stderr,
+enables compiler optimizations and allows building in a 64-bit gcc.
+				--sq5bpf
+				--Antonio Eugenio Burriel <aeburriel@gmail.com>
+
+
+
+diff -ur orig/amr-code/channel.h new/amr-code/channel.h
+--- orig/amr-code/channel.h	2003-01-09 13:33:48.000000000 +0100
++++ new/amr-code/channel.h	2015-02-28 23:09:40.431796317 +0100
+@@ -139,7 +139,7 @@
+ Word16 negate(Word16 var1);               /* Short negate,        1 */
+ Word16 norm_l(Word32 L_var1);             /* Long norm,          30 */
+ Word16 norm_s(Word16 var1);               /* Short norm,         15 */
+-Word16 round(Word32 L_var1);              /* Round,               1 */
++Word16 etsi_round(Word32 L_var1);              /* Round,               1 */
+ Word16 shl(Word16 var1, Word16 var2);     /* Short shift left,    1 */
+ Word16 shr(Word16 var1, Word16 var2);     /* Short shift right,   1 */
+ Word16 sub(Word16 var1, Word16 var2);     /* Short sub,           1 */
+diff -ur orig/amr-code/init_params.c new/amr-code/init_params.c
+--- orig/amr-code/init_params.c	2003-01-09 13:30:52.000000000 +0100
++++ new/amr-code/init_params.c	2015-02-28 23:09:40.435796388 +0100
+@@ -26,11 +26,11 @@
+ #include "const.tab" /* contains constants for channel coding/decoding */
+ #include "arrays.h" /* contains constants for channel coding/decoding */
+ 
+-#include "const_TETRA.tab"   /* contains constants for channel coding/decoding */
+-#include "arrays_TETRA.tab"  /* contains arrays for channel coding/decoding */
++#include "const_tetra.tab"   /* contains constants for channel coding/decoding */
++#include "arrays_tetra.tab"  /* contains arrays for channel coding/decoding */
+ 
+-#include "const_AMR475.tab"   /* contains constants for channel coding/decoding */
+-#include "arrays_AMR475.tab"  /* contains arrays for channel coding/decoding */
++#include "const_amr475.tab"   /* contains constants for channel coding/decoding */
++#include "arrays_amr475.tab"  /* contains arrays for channel coding/decoding */
+ 
+ #define ALLOW_NEG(x) (((x) < 0) ? (((-x)%2 == 1) ?  (-x)/2 - N1_2 + 1 :  (x)/2 + 1) : (x))
+ 
+diff -ur orig/amr-code/makefile new/amr-code/makefile
+--- orig/amr-code/makefile	2003-01-09 13:29:36.000000000 +0100
++++ new/amr-code/makefile	2015-02-28 23:16:31.371084599 +0100
+@@ -21,7 +21,7 @@
+ 
+ CC=gcc
+ 
+-CFLAGS	=	-g -I.
++CFLAGS	=	-g -I. -Wall -O3
+ 
+ SRCS1		=	ccoder.c	ccod_tet.c	init_params.c	sub_cc.c \
+ 			tetra_op.c
+@@ -33,10 +33,10 @@
+ 
+ all:		ccoder	cdecoder
+ 
+-ccoder:
++ccoder: $(SRCS1)
+ 	$(CC) $(SRCS1) $(CFLAGS) -o ccoder
+ 
+-cdecoder:
++cdecoder: $(SRCS2)
+ 	$(CC) $(SRCS2) $(CFLAGS) -o cdecoder
+ 
+ clean:
+diff -ur orig/amr-code/source.h new/amr-code/source.h
+--- orig/amr-code/source.h	2002-11-18 15:54:26.000000000 +0100
++++ new/amr-code/source.h	2015-02-28 23:27:09.550436888 +0100
+@@ -19,11 +19,11 @@
+ 
+ #ifndef TYPEDEF_H
+ #define TYPEDEF_H
++#include <stdint.h>
+ 
+-
+-typedef short Word16;
+-typedef long  Word32;
+-typedef int   Flag;
++typedef int16_t Word16;
++typedef int32_t Word32;
++typedef int     Flag;
+ 
+ #endif
+ 
+@@ -164,7 +164,7 @@
+ Word16 negate(Word16 var1);               /* Short negate,        1 */
+ Word16 norm_l(Word32 L_var1);             /* Long norm,          30 */
+ Word16 norm_s(Word16 var1);               /* Short norm,         15 */
+-Word16 round(Word32 L_var1);              /* Round,               1 */
++Word16 etsi_round(Word32 L_var1);              /* Round,               1 */
+ Word16 shl(Word16 var1, Word16 var2);     /* Short shift left,    1 */
+ Word16 shr(Word16 var1, Word16 var2);     /* Short shift right,   1 */
+ Word16 sub(Word16 var1, Word16 var2);     /* Short sub,           1 */
+diff -ur orig/amr-code/tetra_op.c new/amr-code/tetra_op.c
+--- orig/amr-code/tetra_op.c	2003-01-09 13:36:22.000000000 +0100
++++ new/amr-code/tetra_op.c	2015-02-28 23:09:40.435796388 +0100
+@@ -31,7 +31,7 @@
+ *					- negate()
+ *					- norm_l()
+ *					- norm_s()
+-*					- round()
++*					- etsi_round()
+ *					- sature()
+ *					- shl()
+ *					- shr()
+@@ -1336,14 +1336,14 @@
+ 
+ /************************************************************************
+ *
+-*	Function Name : round
++*	Function Name : etsi_round
+ *
+ *	Purpose :
+ *
+ *		Round the lower 16 bits of the 32 bit input number into its MS 16 bits
+ *		with saturation. Shift the resulting bits right by 16 and return the 16
+ *		bit number:
+-*			round(L_var1) = extract_h(L_add(L_var1,32768))
++*			etsi_round(L_var1) = extract_h(L_add(L_var1,32768))
+ *
+ *	Complexity Weight : 1
+ *
+@@ -1365,7 +1365,7 @@
+ *
+ ************************************************************************/
+ 
+-Word16 round(Word32 L_var1)
++Word16 etsi_round(Word32 L_var1)
+   {
+    Word16 var_out;
+    Word32 L_arrondi;
+diff -ur orig/c-code/cdecoder.c new/c-code/cdecoder.c
+--- orig/c-code/cdecoder.c	1995-06-06 11:32:14.000000000 +0200
++++ new/c-code/cdecoder.c	2015-02-28 23:09:40.435796388 +0100
+@@ -67,23 +67,23 @@
+ 	/* Parse arguments */
+ 	if ( argc != 3 )
+ 	{
+-		puts( "usage : cdecoder input_file output_file" );
+-		puts( "format for input_file  : $6B21...114 bits");
+-		puts( "       ...$6B22...114..." );
+-		puts( "       ...$6B26...114...$6B21");
+-		puts( "format for output_file : two 138 (BFI + 137) bit frames");
++		fputs("usage : cdecoder input_file output_file",stderr );
++		fputs("format for input_file  : $6B21...114 bits",stderr);
++		fputs("       ...$6B22...114...",stderr );
++		fputs("       ...$6B26...114...$6B21",stderr);
++		fputs("format for output_file : two 138 (BFI + 137) bit frames",stderr);
+ 		exit( 1 );
+ 	}
+ 
+ 	if ( (fin = fopen( argv[1], "rb" )) == NULL )
+ 	{
+-		puts("cdecoder: can't open input_file" );
++		fputs("cdecoder: can't open input_file" ,stderr);
+ 		exit( 1 );
+ 	}
+ 
+ 	if ( (fout = fopen( argv[2], "wb" )) == NULL )
+ 	{
+-		puts("cdecoder: can't open output_file" );
++		fputs("cdecoder: can't open output_file",stderr );
+ 		exit( 1 );
+ 	}
+ 
+@@ -93,7 +93,7 @@
+ /* read Input_array (1 TETRA frame = 2 speech frames) from input file */
+ 		if (Read_Tetra_File (fin, Interleaved_coded_array) == -1)
+ 		  {
+-		  puts ("cdecoder: reached end of input_file");
++		  fputs ("cdecoder: reached end of input_file",stderr);
+ 		  break;
+ 		  }
+ 				 
+@@ -116,7 +116,7 @@
+ in "Coded_array" */
+ 
+ /* Message in case the Frame was stolen */
+-		if (bfi1) printf("Frame Nb %ld was stolen\n",Loop_counter+1);
++		if (bfi1) fprintf(stderr,"Frame Nb %ld was stolen\n",Loop_counter+1);
+ 
+ /* Channel Decoding */
+ 		bfi2 = Channel_Decoding(first_pass,Frame_stealing,
+@@ -126,35 +126,35 @@
+ /* Increment Loop counter */
+ 		Loop_counter++;
+ /* Message in case the Bad Frame Indicator was set */
+-		if (bfi2) printf("Frame Nb %ld Bfi active\n\n",Loop_counter);
++		if (bfi2) fprintf(stderr,"Frame Nb %ld Bfi active\n\n",Loop_counter);
+ 
+ /* writing  Reordered_array to output file */
+ 			      /* bfi bit */
+ 		if( fwrite( &bfi1, sizeof(short), 1, fout ) != 1 ) {
+-			puts( "cdecoder: can't write to output_file" );
++			fputs( "cdecoder: can't write to output_file",stderr );
+ 			break;
+ 		}
+ 			     /* 1st speech frame */
+ 		if( fwrite( Reordered_array, sizeof(short), 137, fout ) != 137 )
+ 		{
+-			puts( "cdecoder: can't write to output_file" );
++			fputs("cdecoder: can't write to output_file",stderr );
+ 			break;
+ 		}
+ 			      /* bfi bit */
+ 		if( fwrite( &bfi2, sizeof(short), 1, fout ) != 1 ) {
+-			puts( "cdecoder: can't write to output_file" );
++			fputs("cdecoder: can't write to output_file",stderr );
+ 			break;
+ 		}
+ 			     /* 2nd speech frame */
+ 		if( fwrite( Reordered_array+137, sizeof(short), 137, fout ) 
+ 					!= 137 ) {
+-			puts( "cdecoder: can't write to output_file" );
++			fputs("cdecoder: can't write to output_file",stderr );
+ 			break;
+ 		}
+ 	}
+ 		
+-	printf("%ld Channel Frames processed\n",Loop_counter);
+-	printf("ie %ld Speech Frames\n",2*Loop_counter);
++	fprintf(stderr,"%ld Channel Frames processed\n",Loop_counter);
++	fprintf(stderr,"ie %ld Speech Frames\n",2*Loop_counter);
+ 	
+ 	/* closing files */
+ 	fclose( fin );
+diff -ur orig/c-code/channel.h new/c-code/channel.h
+--- orig/c-code/channel.h	1995-06-09 16:14:42.000000000 +0200
++++ new/c-code/channel.h	2015-02-28 23:09:40.435796388 +0100
+@@ -130,7 +130,7 @@
+ Word16 negate(Word16 var1);               /* Short negate,        1 */
+ Word16 norm_l(Word32 L_var1);             /* Long norm,          30 */
+ Word16 norm_s(Word16 var1);               /* Short norm,         15 */
+-Word16 round(Word32 L_var1);              /* Round,               1 */
++Word16 etsi_round(Word32 L_var1);              /* Round,               1 */
+ Word16 shl(Word16 var1, Word16 var2);     /* Short shift left,    1 */
+ Word16 shr(Word16 var1, Word16 var2);     /* Short shift right,   1 */
+ Word16 sub(Word16 var1, Word16 var2);     /* Short sub,           1 */
+diff -ur orig/c-code/makefile new/c-code/makefile
+--- orig/c-code/makefile	1995-06-06 11:35:40.000000000 +0200
++++ new/c-code/makefile	2015-02-28 23:12:08.158414239 +0100
+@@ -21,9 +21,9 @@
+ 
+ # macro definitions
+ 
+-CC=acc
++CC=gcc
+ 
+-CFLAGS	=	-I.
++CFLAGS	=	-I. -Wall -g -O3
+ 
+ SRCS1		=	scoder.c		scod_tet.c		sub_sc_d.c \
+ 			sub_dsp.c		fbas_tet.c		fexp_tet.c \
+@@ -43,18 +43,18 @@
+ 
+ all:		scoder	ccoder	sdecoder	cdecoder
+ 
+-scoder:
++scoder: $(SRCS1)
+ 	$(CC) $(SRCS1) $(CFLAGS) -o scoder
+ 
+-ccoder:
++ccoder: $(SRCS2)
+ 	$(CC) $(SRCS2) $(CFLAGS) -o ccoder
+ 
+-sdecoder:
++sdecoder: $(SRCS3)
+ 	$(CC) $(SRCS3) $(CFLAGS) -o sdecoder
+ 
+-cdecoder:
++cdecoder: $(SRCS4)
+ 	$(CC) $(SRCS4) $(CFLAGS) -o cdecoder
+ 
+ clean:
+-	rm -f core *.o
++	rm -f core *.o cdecoder sdecoder ccoder scoder
+ 
+Sólo en new/c-code: makefile.orig
+diff -ur orig/c-code/sdecoder.c new/c-code/sdecoder.c
+--- orig/c-code/sdecoder.c	1995-06-06 10:55:28.000000000 +0200
++++ new/c-code/sdecoder.c	2015-02-28 23:09:40.435796388 +0100
+@@ -58,15 +58,15 @@
+ 
+   if ( argc != 3 )
+   {
+-     printf("Usage : sdecoder  serial_file  synth_file\n");
+-     printf("\n");
+-     printf("Format for serial_file:\n");
+-     printf("  Serial stream input is read from a binary file\n");
+-     printf("  where each 16-bit word represents 1 encoded bit.\n");
+-     printf("  BFI + 137 bits by frame\n");
+-     printf("\n");
+-     printf("Format for synth_file:\n");
+-     printf("  Synthesis is written to a binary file of 16 bits data.\n");
++     fprintf(stderr,"Usage : sdecoder  serial_file  synth_file\n");
++     fprintf(stderr,"\n");
++     fprintf(stderr,"Format for serial_file:\n");
++     fprintf(stderr,"  Serial stream input is read from a binary file\n");
++     fprintf(stderr,"  where each 16-bit word represents 1 encoded bit.\n");
++     fprintf(stderr,"  BFI + 137 bits by frame\n");
++     fprintf(stderr,"\n");
++     fprintf(stderr,"Format for synth_file:\n");
++     fprintf(stderr,"  Synthesis is written to a binary file of 16 bits data.\n");
+      exit( 1 );
+   }
+ 
+@@ -74,13 +74,13 @@
+ 
+   if( (f_serial = fopen(argv[1],"rb") ) == NULL )
+   {
+-    printf("Input file '%s' does not exist !!\n",argv[1]);
++    fprintf(stderr,"Input file '%s' does not exist !!\n",argv[1]);
+     exit(0);
+   }
+ 
+   if( (f_syn = fopen(argv[2], "wb") ) == NULL )
+   {
+-    printf("Cannot open file '%s' !!\n", argv[2]);
++    fprintf(stderr,"Cannot open file '%s' !!\n", argv[2]);
+     exit(0);
+   }
+ 
+@@ -95,7 +95,7 @@
+ 
+   while( fread(serial, sizeof(Word16), serial_size, f_serial) == serial_size)
+   {
+-    printf("frame=%d\n", ++frame);
++    fprintf(stderr,"frame=%d\n", ++frame);
+ 
+     Bits2prm_Tetra(serial, parm);	/* serial to parameters */
+ 
+diff -ur orig/c-code/source.h new/c-code/source.h
+--- orig/c-code/source.h	1995-06-06 11:10:52.000000000 +0200
++++ new/c-code/source.h	2015-02-28 23:27:09.550436888 +0100
+@@ -19,11 +19,11 @@
+ 
+ #ifndef TYPEDEF_H
+ #define TYPEDEF_H
++#include <stdint.h>
+ 
+-
+-typedef short Word16;
+-typedef long  Word32;
+-typedef int   Flag;
++typedef int16_t Word16;
++typedef int32_t Word32;
++typedef int     Flag;
+ 
+ #endif
+ 
+@@ -164,7 +164,7 @@
+ Word16 negate(Word16 var1);               /* Short negate,        1 */
+ Word16 norm_l(Word32 L_var1);             /* Long norm,          30 */
+ Word16 norm_s(Word16 var1);               /* Short norm,         15 */
+-Word16 round(Word32 L_var1);              /* Round,               1 */
++Word16 etsi_round(Word32 L_var1);              /* Round,               1 */
+ Word16 shl(Word16 var1, Word16 var2);     /* Short shift left,    1 */
+ Word16 shr(Word16 var1, Word16 var2);     /* Short shift right,   1 */
+ Word16 sub(Word16 var1, Word16 var2);     /* Short sub,           1 */
+diff -ur orig/c-code/sub_dsp.c new/c-code/sub_dsp.c
+--- orig/c-code/sub_dsp.c	1996-03-19 11:25:12.000000000 +0100
++++ new/c-code/sub_dsp.c	2015-02-28 23:09:40.439796459 +0100
+@@ -554,7 +554,7 @@
+ 
+   fac[0] = gamma;
+   for(i=1; i<pp; i++)
+-    fac[i] = round( L_mult(fac[i-1], gamma) );
++    fac[i] = etsi_round( L_mult(fac[i-1], gamma) );
+ 
+   return;
+ }
+@@ -1088,7 +1088,7 @@
+ 
+   a_exp[0] = a[0];
+   for(i=1; i<=pp; i++)
+-    a_exp[i] = round( L_mult(a[i], fac[i-1]) );
++    a_exp[i] = etsi_round( L_mult(a[i], fac[i-1]) );
+ 
+   return;
+ }
+diff -ur orig/c-code/sub_sc_d.c new/c-code/sub_sc_d.c
+--- orig/c-code/sub_sc_d.c	1996-04-25 08:46:54.000000000 +0200
++++ new/c-code/sub_sc_d.c	2015-02-28 23:09:40.439796459 +0100
+@@ -1829,7 +1829,7 @@
+     s = L_mac0(s, x[i-15], coef[i]);
+ 
+   s = L_add(s, s);
+-  i = round(s);
++  i = etsi_round(s);
+   return(i);
+ }
+ 
+@@ -1877,7 +1877,7 @@
+     s = L_mac0(s, x[i-16], coef[i]);
+ 
+   s = L_add(s, s);
+-  i = round(s);
++  i = etsi_round(s);
+   return(i);
+ }
+ 
+diff -ur orig/c-code/tetra_op.c new/c-code/tetra_op.c
+--- orig/c-code/tetra_op.c	1995-06-06 11:22:52.000000000 +0200
++++ new/c-code/tetra_op.c	2015-02-28 23:09:40.439796459 +0100
+@@ -31,7 +31,7 @@
+ *					- negate()
+ *					- norm_l()
+ *					- norm_s()
+-*					- round()
++*					- etsi_round()
+ *					- sature()
+ *					- shl()
+ *					- shr()
+@@ -1335,14 +1335,14 @@
+ 
+ /************************************************************************
+ *
+-*	Function Name : round
++*	Function Name : etsi_round
+ *
+ *	Purpose :
+ *
+ *		Round the lower 16 bits of the 32 bit input number into its MS 16 bits
+ *		with saturation. Shift the resulting bits right by 16 and return the 16
+ *		bit number:
+-*			round(L_var1) = extract_h(L_add(L_var1,32768))
++*			etsi_round(L_var1) = extract_h(L_add(L_var1,32768))
+ *
+ *	Complexity Weight : 1
+ *
+@@ -1364,7 +1364,7 @@
+ *
+ ************************************************************************/
+ 
+-Word16 round(Word32 L_var1)
++Word16 etsi_round(Word32 L_var1)
+   {
+    Word16 var_out;
+    Word32 L_arrondi;

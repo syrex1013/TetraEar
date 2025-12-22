@@ -1,0 +1,229 @@
+/**************************************************************************
+*
+*	FILENAME				:	arrays.tab
+*
+*	DESCRIPTION			:	Arrays for speech channel coding and decoding
+*
+**************************************************************************/
+#ifndef TRUE
+# define TRUE   (1==1)
+# define FALSE  (1==0)
+#endif
+
+/* ARRAYS FOR INITIALIZATION OF THE CHANNEL CODING */
+/* Definition of the sensitivity classes : 3 classes */
+const Word16	TAB0_AMR475[N0_AMR475] =	{32,33,34,35,36,37,38,41,42,43,
+                                             44,53,54,55,56,57,58,59,60,61,
+                                             65,66,67,68,69,70,71,72,73,74,75,
+                                             76,77,78,85,86,87,88,89,90,
+                                             91,92,93,94,95};
+/* Class 0
+   30 terms : Non protected class
+	      Least sensitive bits */
+
+const Word16	TAB1_AMR475[N1_AMR475] =	{49,62,63,83,30,
+                                                 48,47,46,64,52,18,20,22,45,39,
+                                                 40,79,23,21,19,
+                                                 17,31,80,81,82,51,84,29,24,50};
+/* Class 1
+   55 terms : Protected by Rate 8/12 
+	      Ranked with the most important bits at the boundaries,
+	      and least important at the middle */
+
+const Word16	TAB2_AMR475[N2_AMR475] =	{25, 28, 27, 26, 16, 15, 14, 
+                                                 13, 12, 11, 10,  9,  8,  7,  
+                                                  6,  5,  4,  3,  2,  1};
+/* Class 2
+   10 terms : Protected by Rate 8/18
+	      Ranked from least to most important bits */
+
+
+
+const Word16    Fs_N0_AMR475[2] = {54,28};
+const Word16    Fs_N1_AMR475[2] = {23,15};
+const Word16    Fs_N2_AMR475[2] = {18,18};
+
+
+const Word16	Fs_TAB0_AMR475[2][54] = {{19,20,21,22,23,32,33,34,35,36,
+                                          37,38,39,40,41,42,43,44,45,53,54,
+                                          55,56,57,58,59,60,61,65,66,67,
+                                          68,69,70,71,72,73,74,75,76,77,
+                                          78,79,85,86,87,88,89,90,91,92,
+                                          93,94,95},
+                                         {19,20,21,22,23,32,33,34,35,36,
+                                          37,38,39,40,41,42,43,44,45,53,54,
+                                          55,56,57,58,59,60,61}};
+/* Class 0
+   30 terms : Non protected class
+	      Least sensitive bits */
+
+const Word16	Fs_TAB1_AMR475[2][23] = {{28,49,62,63,83,30,48,47,46,
+                                          64,52,18,17,31,80,81,82,51,
+                                          84,29,24,50,25},
+                                         {28,49,30,48,47,46,
+                                          52,18,17,31,51,
+                                          29,24,50,25}};
+/* Class 1
+   55 terms : Protected by Rate 8/12 
+	      Ranked with the most important bits at the boundaries,
+	      and least important at the middle */
+
+const Word16	Fs_TAB2_AMR475[2][18] = {{27, 26, 16, 15, 14, 
+                                          13, 12, 11, 10,  9,  8,  7,  
+                                           6,  5,  4,  3,  2,  1},
+                                         {27, 26, 16, 15, 14, 
+                                          13, 12, 11, 10,  9,  8,  7,  
+                                           6,  5,  4,  3,  2,  1}};
+/* Class 2
+   10 terms : Protected by Rate 8/18
+	      Ranked from least to most important bits */
+
+
+const Word16  Fs_Fixed_Bits_AMR475[2] = {0,34};
+
+const Word16  Fs_Fixed_Bit_TAB_AMR475[2][34] = {{},{62,63,64,65,66,67,68,69,70,71,
+                                                    72,73,74,75,76,77,78,79,80,81,
+                                                    82,83,84,85,86,87,88,89,90,91,
+                                                    92,93,94,95}};
+
+#if FALSE  // Expected Gain values
+const Word16  Fs_Fixed_Bit_List_AMR475[34] = 
+                                             {1,0,0,0,
+                                              0,1,0,1,0,0,1,1,1,
+                                              0,0,1,0,1,0,0,1,
+                                              1,0,0,0,                 
+                                              1,1,1,0,0,1,0,0,1};
+
+#else     // LTP Emphasised Gain values
+const Word16  Fs_Fixed_Bit_List_AMR475[34] = {1,0,0,0,
+                                              0,1,0,1,0,0,1,1,1,
+                                              1,0,1,0,0,1,1,0,
+                                              1,0,0,0,
+                                              1,1,1,0,0,1,0,0,1};
+#endif
+
+/* PUNCTURING CHARACTERISTICS: */
+/* Puncturing Tables for the two protected classes (Class 1 and 2) */
+
+const Word16	A1_AMR475[Period_pct*3]		=
+						{1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 0, 1, 0, 1, 0, 1, 0,
+						 0, 0, 0, 0, 0, 0, 0, 0};
+/* Puncturing Table for Class 1 : Rate 8/12 (2/3) */
+
+const Word16	A2_AMR475[Period_pct*3]		=
+						{1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 0, 0, 0, 1, 0, 0, 0};
+
+/***************************************
+
+const Word16	Fs_A1_AMR475[Period_pct*3]		=
+						{1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 0, 1, 0, 1, 0, 1, 0,
+						 0, 0, 0, 0, 0, 0, 0, 0};
+***************************************/
+/* Puncturing Table for Class 1 : Rate 8/12 (2/3) */
+
+const Word16	Fs_A1_AMR475[Period_pct*3]		=
+						{1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 0, 1, 0, 1, 0, 1, 0,
+						 0, 0, 0, 0, 0, 0, 0, 0};
+/* Puncturing Table for Class 1 : Rate 8/11  */
+
+/***************************************
+const Word16	Fs_A2_AMR475[Period_pct*3]	=
+						{1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 0, 0, 0, 0, 0, 0, 0};
+***************************************/
+/* Puncturing Table for Class 2 : Rate 8/17 */
+const Word16	Fs_A2_AMR475[Period_pct*3]	=
+						{1, 1, 1, 1, 1, 1, 1, 1,
+						 1, 1, 1, 0, 1, 1, 1, 0,
+						 0, 0, 0, 0, 0, 0, 0, 0};
+/* Puncturing Table for Class 2 : Rate 8/14 */
+
+/* BAD FRAME INDICATOR : CRC (Cyclic Redundant Check) */
+/* Definition of the 8 CRC bits */
+
+const Word16	TAB_CRC1_AMR475[SIZE_TAB_CRC1_AMR475] =
+						{1,  5,  8,9,  13,  15,16,
+						17,  19,  21,22,  24,25,  31,
+						32,  35,36,  38,  40,  43,44,
+						45,  48,49,50,51,  53,54,  56};
+/* Ranks of the bits in Class2 protected by the First bit of the CRC */
+
+const Word16	TAB_CRC2_AMR475[SIZE_TAB_CRC2_AMR475] =
+						{2,  6,  9,10,  14,
+						16,17,18,  20,  22,23,  25,26,
+						32,33,  36,37,  39,  41,  44,45,
+						46,  49,50,51,52,  54,55,  57};
+/* Ranks of the bits in Class 2 protected by the Second bit of the CRC */
+
+const Word16	TAB_CRC3_AMR475[SIZE_TAB_CRC3_AMR475] =
+						{3,  7,  10,11,  15,
+						17,18,19,  21,  23,24,  26,27,
+						33,34,  37,38,  40,  42,  45,
+						46,47,  50,51,52,53,  55,56,  58};
+/* Ranks of the bits in Class 2 protected by the Third bit of the CRC */
+
+const Word16	TAB_CRC4_AMR475[SIZE_TAB_CRC4_AMR475] =
+						{1,  4,5,  9,  11,12,13,  15,
+						17,18,  20,21,  27,28,  31,
+						32,  34,  36,  39,40,41,  44,45,
+						46,47,  49,50,  52,  57,  59};
+/* Ranks of the bits in Class 2 protected by the Fourth bit of the CRC */
+
+const Word16	TAB_CRC5_AMR475[SIZE_TAB_CRC5_AMR475] =
+						{2,  5,6,  10,  12,13,14,
+						16,  18,19,  21,22,  28,29,
+						32,33,  35,  37,  40,41,42,  45,
+						46,47,48,  50,51,  53,  58,  60};
+/* Ranks of the bits in Class 2 protected by the Fifth bit of the CRC */
+
+const Word16	TAB_CRC6_AMR475[SIZE_TAB_CRC6_AMR475] =
+						{3,  6,7,  11,  13,14,15,
+						17,  19,20,  22,23,  29,30,
+						33,34,  36,  38,  41,42,43,
+						46,47,48,49,  51,52,  54,  59};
+/* Ranks of the bits in Class 2 protected by the Sixth bit of the CRC */
+
+const Word16	TAB_CRC7_AMR475[SIZE_TAB_CRC7_AMR475] =
+						{4,  7,8,  12,  14,15,
+						16,  18,  20,21,  23,24,  30,
+						31,  34,35,  37,  39,  42,43,44,
+						47,48,49,50,  52,53,  55,  60};
+/* Ranks of the bits in Class 2 protected by the Seventh bit of the CRC */
+
+const Word16	TAB_CRC8_AMR475[SIZE_TAB_CRC8_AMR475] =
+						{1,2,3,4,  8,  13,14,  16,  19,
+						20,  22,23,  25,26,27,28,29,30,
+						32,33,34,  36,37,  40,41,42,  44,
+						48,  50,  53,  56,57,58,59,60};
+/* Ranks of the bits in Class 2 protected by the Eighth bit of the CRC */
+
+
+
+/* IN CASE OF FRAME STEALING :
+   BAD FRAME INDICATOR : CRC (Cyclic Redundant Check) */
+const Word16	Fs_TAB_CRC1_AMR475[Fs_SIZE_TAB_CRC1_AMR475] =
+						{1,  4,5,  7,  9,10,11,12,
+						16,  19,20,  22,  24,25,26,27,  31,  34,35,};
+/* Ranks of the bits in Class2 protected by the First bit of the CRC */
+
+const Word16	Fs_TAB_CRC2_AMR475[Fs_SIZE_TAB_CRC2_AMR475] =
+						{1,2,  4,  6,7,8,9,  13,
+						16,17,  19,  21,22,23,24,  28,  31,32, 36};
+/* Ranks of the bits in Class 2 protected by the Second bit of the CRC */
+
+const Word16	Fs_TAB_CRC3_AMR475[Fs_SIZE_TAB_CRC3_AMR475] =
+						{  2,3,  5,  7,8,9,10,  14,
+						  17,18,  20,  22,23,24,25,  29,  32,33, 35};
+/* Ranks of the bits in Class 2 protected by the Third bit of the CRC */
+
+const Word16	Fs_TAB_CRC4_AMR475[Fs_SIZE_TAB_CRC4_AMR475] =
+						{  3,4,  6,  8,9,10,11,  15,
+						  18,19,  21,  23,24,25,26,  30,  33,34,  36};
+/* Ranks of the bits in Class 2 protected by the Fourth bit of the CRC */
+

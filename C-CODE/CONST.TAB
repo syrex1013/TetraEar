@@ -1,0 +1,60 @@
+/**************************************************************************
+*
+*	FILENAME				:	const.tab
+*
+*	DESCRIPTION			:	Constants for speech channel coding and decoding
+*
+**************************************************************************/
+
+/* CONSTANTS FOR CONVOLUTIONAL CODING */
+#define	K				5 /* Constraint Length */
+#define	Nber_bits_quantif		8 /* Quantization */
+#define	Decoding_delay		30 /* Decoding Delay */
+/* Polynomial generators : these polynomials should be under the format
+1+...+X**4 to match the decoding procedure : */
+#define	G1				0x01F /* First Polynomial */
+#define	G2				0x01B /* Second Polynomial */
+#define	G3				0x015 /* Third Polynomial */
+
+/* FRAME FORMAT : */
+/* Size of the three sensitivity classes  */
+/* these sizes correspond to the coding of two speech frames at a time */
+/*                                         ---                         */
+#define	N0		51 /* One Frame : Less sensitive class (class 0) */
+#define	N1		56 /* One Frame : Moderate sensitive (class 1) */
+#define	N2		30 /* One Frame : Most sensitive (class2) */
+#define	N0_2		102 /* Two Frames : Less sensitive class (class 0) */
+#define	N1_2		112 /* Two Frames : Moderate sensitive (class 1) */
+#define	N2_2		60 /* Two Frames : Most sensitive (class 2) */
+#define	N1_2_coded	168 /* Two Frames after coding : size of class 1 after coding */
+#define	N2_2_coded	162 /* Two Frames after coding : size of class 2 after coding including CRC bits, (K-1) bits to empty the encoder */
+/* N0_2 + N1_2_coded + N2_2_coded	=	size of a coded frame (60 ms  at 7200b/s)
+						=	432
+						=	Long_time_slot */
+
+#define	Length_vocoder_frame	137 /* 30 ms speech frame at 4567 b/s */
+#define	Length_2_frames		274 /* Two 30 ms speech frames */
+#define	Length_time_slot		432 /* 60 ms frame at 7200 b/s */
+
+/* PUNCTURING CHARACTERISTICS: */
+#define	Period_pct			8 /* Puncturing Period */
+#define	Ai_j_SIZE		Period_pct*6 /* Size of Puncturing Arrays */
+
+/* BAD FRAME INDICATOR: CRC */
+#define	SIZE_CRC			8 /* Number of bits of the CRC (Cyclic Redundant Check) */
+#define	Fs_SIZE_CRC			4 /* Number of bits of the CRC (Frame Stealing Active) */
+
+#define	SIZE_TAB_CRC1		29	/* Amount of bits taken into account */
+#define	SIZE_TAB_CRC2		29	/* In every of the 8 CRC bits */
+#define	SIZE_TAB_CRC3		29
+#define	SIZE_TAB_CRC4		30
+#define	SIZE_TAB_CRC5		30
+#define	SIZE_TAB_CRC6		29
+#define	SIZE_TAB_CRC7		29
+#define	SIZE_TAB_CRC8		35
+
+/* CONSTANTS FOR MATRIX INTERLEAVING */
+#define	LINES				24
+#define	COLUMNS			18
+/* LINES * COLUMNS = Length_time_slot  = 432 */
+

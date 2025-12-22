@@ -1,0 +1,51 @@
+/************************************************************************
+*
+*	FILENAME		:	lag_wind.tab
+*
+*	DESCRIPTION		:	Table of lag_window coefficents for the autocorrelation.
+*
+*						lag_wind[0] = 1.00000000 	(*)
+*						lag_wind[1] = 0.99884027	(**)
+*						lag_wind[2] = 0.99551868
+*						lag_wind[3] = 0.99000722
+*						lag_wind[4] = 0.98234236
+*						lag_wind[5] = 0.97257471
+*						lag_wind[6] = 0.96076828
+*						lag_wind[7] = 0.94699991
+*						lag_wind[8] = 0.93135828
+*						lag_wind[9] = 0.91394323
+*						lag_wind[10]= 0.89486438
+*
+*	COMMENTS		:	- (*) The first coefficient whose value = 1 is just 
+*					  mentioned for information, but not included in the code
+*					- (**) All the other coefficents incorporate a scaling factor *					  of 1,00005 corresponding to a noise floor of -43 dB
+*					- This table uses a special extended precision format
+*					  (see "comments" in the header of
+*					   the file fexp_tet.c - Section A.5.2)
+*
+************************************************************************/
+
+static Word16 lag_h[10] = {
+      32729,
+      32621,
+      32440,
+      32189,
+      31869,
+      31482,
+      31031,
+      30518,
+      29948,
+      29322};
+
+static Word16 lag_l[10] = {
+      32704,
+       5120,
+      18240,
+      12928,
+      10752,
+      14912,
+       9600,
+      24512,
+       3008,
+      30016};
+
