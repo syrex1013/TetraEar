@@ -1171,7 +1171,7 @@ class CaptureThread(QThread):
                     signal_present = False
                     if len(samples) >= n_fft:
                         max_power = np.max(power)
-                        if max_power > -85: # Threshold for decoding attempt
+                        if max_power > -70: # Threshold for decoding attempt
                             self.signal_detected.emit(self.frequency, max_power)
                             signal_present = True
                     
@@ -1182,74 +1182,74 @@ class CaptureThread(QThread):
                             demodulated = self.processor.process(samples)
                             
                             # FM Demodulation for audio monitoring
-                        if self.monitor_raw:
-                            try:
-                                # Downsample to ~8kHz for audio
-                                target_rate = 8000
-                                decimation = int(self.sample_rate / target_rate)
-                                if decimation > 0:
-                                    audio_samples = samples[::decimation]
-                                    if len(audio_samples) > 1:
-                                        # FM demod: angle of product of sample and conjugate of previous sample
-                                        audio = np.angle(audio_samples[1:] * np.conj(audio_samples[:-1]))
-                                        # Normalize volume
-                                        audio = audio / np.pi * 0.5
-                                        self.raw_audio_data.emit(audio)
-                            except Exception as audio_err:
-                                pass
+                            if self.monitor_raw:
+                                try:
+                                    # Downsample to ~8kHz for audio
+                                    target_rate = 8000
+                                    decimation = int(self.sample_rate / target_rate)
+                                    if decimation > 0:
+                                        audio_samples = samples[::decimation]
+                                        if len(audio_samples) > 1:
+                                            # FM demod: angle of product of sample and conjugate of previous sample
+                                            audio = np.angle(audio_samples[1:] * np.conj(audio_samples[:-1]))
+                                            # Normalize volume
+                                            audio = audio / np.pi * 0.5
+                                            self.raw_audio_data.emit(audio)
+                                except Exception as audio_err:
+                                    pass
                         
-                        # Decode TETRA frames
-                        frames = self.decoder.decode(demodulated)
+                            # Decode TETRA frames
+                            frames = self.decoder.decode(demodulated)
                         
-                        # Emit all decoded frames
-                        for frame in frames:
-                            # Handle Voice Frames
-                            if frame['type'] == 1: # Traffic
-                                # Extract payload
-                                payload = None
-                                if frame.get('decrypted') and 'decrypted_bytes' in frame:
-                                    try:
-                                        payload = bytes.fromhex(frame['decrypted_bytes'])
-                                    except:
-                                        pass
-                                elif not frame.get('encrypted') and 'bits' in frame:
-                                    # Extract raw bits for clear voice
-                                    try:
-                                        # Skip header (32 bits)
-                                        payload_bits = frame['bits'][32:]
-                                        if hasattr(payload_bits, 'tobytes'):
-                                            payload = payload_bits.tobytes()
-                                    except:
-                                        pass
+                            # Emit all decoded frames
+                            for frame in frames:
+                                # Handle Voice Frames
+                                if frame['type'] == 1: # Traffic
+                                    # Extract payload
+                                    payload = None
+                                    if frame.get('decrypted') and 'decrypted_bytes' in frame:
+                                        try:
+                                            payload = bytes.fromhex(frame['decrypted_bytes'])
+                                        except:
+                                            pass
+                                    elif not frame.get('encrypted') and 'bits' in frame:
+                                        # Extract raw bits for clear voice
+                                        try:
+                                            # Skip header (32 bits)
+                                            payload_bits = frame['bits'][32:]
+                                            if hasattr(payload_bits, 'tobytes'):
+                                                payload = payload_bits.tobytes()
+                                        except:
+                                            pass
                                 
-                                if payload and self.voice_processor:
-                                    audio_segment = self.voice_processor.decode_frame(payload)
-                                    if len(audio_segment) > 0:
-                                        self.voice_audio_data.emit(audio_segment)
-                                        frame['has_voice'] = True
+                                    if payload and self.voice_processor:
+                                        audio_segment = self.voice_processor.decode_frame(payload)
+                                        if len(audio_segment) > 0:
+                                            self.voice_audio_data.emit(audio_segment)
+                                            frame['has_voice'] = True
                             
-                            self.frame_decoded.emit(frame)
+                                self.frame_decoded.emit(frame)
                         
-                        # If no frames decoded, generate one synthetic frame every 3 seconds
-                        # (for testing/demonstration when no real signal)
-                        if len(frames) == 0:
-                            import time
-                            current_time = time.time()
-                            if not hasattr(self, '_last_test_frame'):
-                                self._last_test_frame = current_time
+                            # If no frames decoded, generate one synthetic frame every 3 seconds
+                            # (for testing/demonstration when no real signal)
+                            if len(frames) == 0:
+                                import time
+                                current_time = time.time()
+                                if not hasattr(self, '_last_test_frame'):
+                                    self._last_test_frame = current_time
                             
-                            if current_time - self._last_test_frame > 3:
-                                # Only show test frame if explicitly enabled
-                                test_frame = self._generate_synthetic_frame()
-                                test_frame['is_test_data'] = True  # Mark as test
-                                self.frame_decoded.emit(test_frame)
-                                self._last_test_frame = current_time
+                                if current_time - self._last_test_frame > 3:
+                                    # Only show test frame if explicitly enabled
+                                    test_frame = self._generate_synthetic_frame()
+                                    test_frame['is_test_data'] = True  # Mark as test
+                                    self.frame_decoded.emit(test_frame)
+                                    self._last_test_frame = current_time
                     
-                    except Exception as decode_err:
-                        # Log error but don't spam
-                        if not hasattr(self, '_decode_error_logged'):
-                            self.error_occurred.emit(f"Decode error: {decode_err}")
-                            self._decode_error_logged = True
+                        except Exception as decode_err:
+                            # Log error but don't spam
+                            if not hasattr(self, '_decode_error_logged'):
+                                self.error_occurred.emit(f"Decode error: {decode_err}")
+                                self._decode_error_logged = True
                     
                 except Exception as e:
                     self.error_occurred.emit(f"Capture error: {e}")

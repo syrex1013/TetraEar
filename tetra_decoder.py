@@ -107,7 +107,7 @@ class TetraDecoder:
         
         return np.array(bits)
     
-    def find_sync(self, bits, threshold=0.94):
+    def find_sync(self, bits, threshold=0.96):
         """
         Find TETRA synchronization pattern.
         
