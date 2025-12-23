@@ -1,6 +1,6 @@
 # 📡 TetraEar - Professional TETRA Decoder
 
-![TETRA Decoder Pro Banner](assets/banner.png)
+![TETRA Decoder Pro Banner](tetraear/assets/banner.png)
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
@@ -48,7 +48,7 @@
 ### 🛠️ **Developer-Friendly**
 - **CLI Mode**: Run without GUI using `--no-gui` flag
 - **Rich Logging**: Color-coded console output
-- **Debugging**: Comprehensive logging to `logs/` directory
+- **Debugging**: Logs/recordings live in the user data directory (override with `TETRAEAR_DATA_DIR`)
 - **API**: Modular design for easy integration
 
 ---
@@ -76,14 +76,14 @@ pip install -r requirements.txt
 ```
 
 ### 3️⃣ (Optional) Install TETRA Codec
-Place `cdecoder.exe` and `sdecoder.exe` in `tetra_codec/bin/` directory, or run:
+Place `cdecoder.exe` and `sdecoder.exe` in `tetraear/tetra_codec/bin/` directory, or run:
 ```bash
-python install_tetra_codec.py
+python -m tetraear.tools.install_tetra_codec
 ```
 
 ### 4️⃣ Verify Installation
 ```bash
-python verify_codec.py
+python -m tetraear.tools.verify_codec
 ```
 
 ---
@@ -92,12 +92,12 @@ python verify_codec.py
 
 ### GUI Mode (Recommended)
 ```bash
-python tetra_gui_modern.py
+python -m tetraear
 ```
 
 ### CLI Mode
 ```bash
-python tetra_gui_modern.py --no-gui -f 392.225 --auto-start
+python -m tetraear --no-gui -f 392.225 --auto-start
 ```
 
 ### Command-Line Options
@@ -117,16 +117,16 @@ python tetra_gui_modern.py --no-gui -f 392.225 --auto-start
 ### Examples
 ```bash
 # Launch GUI with specific frequency
-python tetra_gui_modern.py -f 392.225
+python -m tetraear -f 392.225
 
 # Auto-start capture with audio monitoring
-python tetra_gui_modern.py -f 392.225 --auto-start -m
+python -m tetraear -f 392.225 --auto-start -m
 
 # Run in CLI mode
-python tetra_gui_modern.py --no-gui -f 392.225 -g 35
+python -m tetraear --no-gui -f 392.225 -g 35
 
 # Scan frequency range then launch GUI
-python tetra_gui_modern.py --scan 390 392
+python -m tetraear --scan 390 392
 ```
 
 ---
@@ -185,7 +185,7 @@ Click the **⚙️ Settings** button to access:
 - Real-time application logs
 - Color-coded by severity
 - Filter by log level
-- Exports to `logs/` directory
+- Exports to the user data directory (override with `TETRAEAR_DATA_DIR`)
 
 ### 📈 Statistics
 - Total frames decoded
@@ -205,7 +205,7 @@ Click the **⚙️ Settings** button to access:
 4. Enable **Follow Frequency (AFC)** to auto-track signal
 
 ### 🔊 Voice Decoding
-- Ensure `cdecoder.exe` is in `tetra_codec/bin/`
+- Ensure `cdecoder.exe` is in `tetraear/tetra_codec/bin/`
 - Check **Monitor Audio** to hear decoded voice
 - Adjust gain (45-50 dB recommended)
 - Voice frames appear with 🔊 icon in Decoded Frames tab
@@ -258,25 +258,20 @@ Click the **⚙️ Settings** button to access:
 ## 📁 Project Structure
 
 ```
-TetraEar/
-├── assets/                     # Icons, banner, UI resources
-├── logs/                       # Application logs
-├── records/                    # Recorded audio and raw frames
-├── tetra_codec/               # TETRA ACELP codec binaries
-│   └── bin/
-│       ├── cdecoder.exe      # Voice decoder
-│       └── sdecoder.exe      # (Optional)
-├── tetra_gui_modern.py        # Main GUI application
-├── tetra_decoder.py           # TETRA frame decoder
-├── tetra_protocol.py          # Protocol parser (MAC/LLC)
-├── tetra_crypto.py            # Encryption/decryption (TEA1/2/3/4)
-├── voice_processor.py         # Voice codec integration
-├── signal_processor.py        # DSP and demodulation
-├── rtl_capture.py             # RTL-SDR interface
-├── frequency_scanner.py       # Frequency scanning
-├── settings.json              # User settings and presets
-├── requirements.txt           # Python dependencies
-└── README.md                  # This file
+Tetra/
+├── tetraear/               # Application package root
+│   ├── assets/             # Icons, banner, UI resources
+│   ├── bin/                # Runtime DLLs
+│   ├── tetra_codec/        # TETRA ACELP codec binaries
+│   │   └── bin/
+│   ├── tools/              # Build + packaging tools
+│   ├── core/
+│   ├── signal/
+│   ├── audio/
+│   └── ui/
+├── tests/                  # Unit + integration tests
+├── requirements.txt
+└── README.md
 ```
 
 ---

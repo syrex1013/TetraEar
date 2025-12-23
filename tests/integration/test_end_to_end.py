@@ -5,9 +5,9 @@ End-to-end integration tests for TETRA decoding pipeline.
 import pytest
 import numpy as np
 from unittest.mock import Mock, MagicMock, patch
-from signal_processor import SignalProcessor
-from tetra_decoder import TetraDecoder
-from tetra_protocol import TetraProtocolParser
+from tetraear.signal.processor import SignalProcessor
+from tetraear.core.decoder import TetraDecoder
+from tetraear.core.protocol import TetraProtocolParser
 
 
 @pytest.mark.integration
@@ -79,7 +79,7 @@ class TestEndToEndDecoding:
     
     def test_decryption_pipeline(self, sample_encrypted_frame, sample_tea1_key):
         """Test decryption in decoding pipeline."""
-        from tetra_crypto import TEADecryptor
+        from tetraear.core.crypto import TEADecryptor
         
         decryptor = TEADecryptor(sample_tea1_key, algorithm='TEA1')
         decrypted = decryptor.decrypt_block(sample_encrypted_frame)

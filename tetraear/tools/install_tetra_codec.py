@@ -7,7 +7,7 @@ Requirements (MSYS2):
   pacman -S mingw-w64-x86_64-gcc make patch unzip
 
 Output:
-  ./tetra_codec/bin/*.exe
+  ./tetraear/tetra_codec/bin/*.exe
 """
 
 import hashlib
@@ -20,6 +20,7 @@ import urllib.request
 import zipfile
 import ssl
 import re
+from pathlib import Path
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ================= CONFIG =================
@@ -27,8 +28,9 @@ ssl._create_default_https_context = ssl._create_unverified_context
 URL = "http://www.etsi.org/deliver/etsi_en/300300_300399/30039502/01.03.01_60/en_30039502v010301p0.zip"
 CODECSUM = "a8115fe68ef8f8cc466f4192572a1e3e"
 
-BASE_DIR = os.path.abspath("tetra_codec")
-INSTALL_DIR = os.path.join(BASE_DIR, "bin")
+TETRAEAR_ROOT = Path(__file__).resolve().parents[1]
+BASE_DIR = str(TETRAEAR_ROOT / "tetra_codec")
+INSTALL_DIR = str(TETRAEAR_ROOT / "tetra_codec" / "bin")
 
 CODEC_FILE = os.path.basename(URL)
 SCRIPT_VERSION = "1.1"
@@ -203,7 +205,7 @@ def install_codec():
     if not c_code_dir:
         fail("C-CODE directory not found")
 
-    print("[*] Installing binaries to ./tetra_codec/bin")
+    print(f"[*] Installing binaries to {INSTALL_DIR}")
     os.makedirs(INSTALL_DIR, exist_ok=True)
 
     wanted = {
@@ -269,7 +271,7 @@ def main():
     cleanup()
 
     if check_install():
-        print("[SUCCESS] Codec installed in ./tetra_codec/bin")
+        print(f"[SUCCESS] Codec installed in {INSTALL_DIR}")
     else:
         fail("Installation verification failed")
 

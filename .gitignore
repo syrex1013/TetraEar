@@ -21,7 +21,7 @@ wheels/
 *.egg
 logs/
 records/
-tetra_codec/*
+release/
 resources/*
 
 # Virtual environments
@@ -81,8 +81,6 @@ __pycache__/test_*
 # CI/CD artifacts
 build_metadata.txt
 TetraEar-v*-Windows.zip
-!release/README.txt
-!release/README.md
 
 # OS
 .DS_Store

@@ -1,7 +1,24 @@
 """
 TETRA Protocol Layer Parser
-Implements PHY, MAC, and higher layer parsing as demonstrated by OpenEar.
-Parses bursts, slots, frames, and superframes.
+
+This module implements PHY, MAC, and higher layer parsing for TETRA frames.
+Parses bursts, slots, frames, and superframes according to ETSI TETRA standards.
+
+Classes:
+    TetraProtocolParser: Main protocol parser for TETRA frames
+    TetraBurst: Represents a TETRA burst
+    MacPDU: Represents a MAC layer PDU
+    CallMetadata: Metadata for TETRA calls
+
+Enums:
+    BurstType: TETRA burst types
+    ChannelType: TETRA logical channel types
+    PDUType: MAC PDU types
+
+Example:
+    >>> from tetraear.core.protocol import TetraProtocolParser
+    >>> parser = TetraProtocolParser()
+    >>> burst = parser.parse_burst(symbols, slot_number=0)
 """
 
 import numpy as np
@@ -795,25 +812,44 @@ class TetraProtocolParser:
         # Example 2: SDS with GSM 7-bit (07 00 Length ...)
         if len(data) > 3 and data[0] == 0x07 and data[1] == 0x00:
             # User example: 07 00 D2 D4 79 9E 2F 03 -> STATUS OK
-            # Try unpacking from offset 3 (skipping length byte D2)
-            payload = data[3:]
-            try:
-                text = self._unpack_gsm7bit(payload)
-                if self._is_valid_text(text):
-                    self.stats['data_messages'] += 1
-                    return f"[SDS-GSM] {text}"
-            except:
-                pass
-            
-            # Fallback: Try from offset 2 if offset 3 failed
-            payload = data[2:]
-            try:
-                text = self._unpack_gsm7bit(payload)
-                if self._is_valid_text(text):
-                    self.stats['data_messages'] += 1
-                    return f"[SDS-GSM] {text}"
-            except:
-                pass
+            def score_text(text: str) -> float:
+                if not text:
+                    return 0.0
+                printable = sum(1 for c in text if c.isprintable() and c not in "\x1b")
+                alnum = sum(1 for c in text if c.isalnum() or c.isspace())
+                alpha = sum(1 for c in text if c.isalpha())
+                return (printable / len(text)) + (alnum / len(text)) + (0.5 if alpha > 0 else 0.0)
+
+            candidates: List[str] = []
+
+            # Some SDS payloads include a septet count at offset 2.
+            septet_count = data[2]
+            payload_3 = data[3:]
+            if payload_3:
+                max_septets = (len(payload_3) * 8) // 7
+                if 0 < septet_count <= min(160, max_septets):
+                    candidates.append(self._unpack_gsm7bit(payload_3, septet_count=septet_count))
+                candidates.append(self._unpack_gsm7bit(payload_3))
+
+            # Fallback: decode starting at offset 2 (treat offset-2 byte as packed content).
+            payload_2 = data[2:]
+            if payload_2:
+                candidates.append(self._unpack_gsm7bit(payload_2))
+
+            best = ""
+            best_score = 0.0
+            for text in candidates:
+                text = text.strip("\x00").strip()
+                if not text:
+                    continue
+                s = score_text(text)
+                if s > best_score:
+                    best_score = s
+                    best = text
+
+            if best and self._is_valid_text(best, threshold=0.55):
+                self.stats['data_messages'] += 1
+                return f"[SDS-GSM] {best}"
 
         # --- Standard SDS-TL PID Checks ---
         pid = data[0]
@@ -883,8 +919,8 @@ class TetraProtocolParser:
         
         # Try GSM 7-bit unpacking as last resort
         try:
-            text = self._unpack_gsm7bit(test_data)
-            if self._is_valid_text(text, threshold=0.5):
+            text = self._unpack_gsm7bit(test_data).strip("\x00").strip()
+            if self._is_valid_text(text, threshold=0.55):
                 self.stats['data_messages'] += 1
                 return f"[GSM7] {text}"
         except:
@@ -902,10 +938,49 @@ class TetraProtocolParser:
                 return f"[BIN-ENC] SDS (Binary/Encrypted) - {len(test_data)} bytes | {hex_preview}"
 
         # Default to Hex dump for binary data
-        hex_dump = data_stripped.hex(' ').upper()
-        if len(hex_dump) > 100:
-            hex_dump = hex_dump[:100] + "..."
-        return f"[BIN] {hex_dump}"
+        def hex_preview(buf: bytes, max_bytes: int = 48) -> str:
+            if len(buf) <= max_bytes:
+                return buf.hex(" ").upper()
+            return buf[:max_bytes].hex(" ").upper() + " ..."
+
+        pid = data_stripped[0]
+        payload = data_stripped[1:]
+
+        parts = [f"PID=0x{pid:02X}", f"HEX={hex_preview(data_stripped, max_bytes=32)}"]
+
+        if payload:
+            printable_count = sum(1 for b in payload if 32 <= b <= 126 or b in (10, 13, 9))
+            if (printable_count / len(payload)) >= 0.85:
+                try:
+                    ascii_text = payload.decode("latin-1", errors="replace").replace("\r", "").replace("\x00", "")
+                    ascii_text = "".join(c for c in ascii_text if c.isprintable() or c in "\n\t").strip()
+                    if ascii_text:
+                        parts.append(f"ASCII=\"{ascii_text[:60]}\"")
+                except Exception:
+                    pass
+
+            tlv_items = []
+            idx = 0
+            while idx + 2 <= len(payload):
+                tag = payload[idx]
+                length = payload[idx + 1]
+                if length == 0 or idx + 2 + length > len(payload):
+                    break
+                value = payload[idx + 2: idx + 2 + length]
+                tlv_items.append(f"{tag:02X}:{length}={hex_preview(value, max_bytes=12)}")
+                idx += 2 + length
+                if len(tlv_items) >= 4:
+                    break
+            if tlv_items and idx >= max(3, int(len(payload) * 0.75)):
+                parts.append("TLV=" + " ".join(tlv_items))
+
+            if len(payload) in (2, 4, 6, 8, 10, 12) and len(payload) <= 12:
+                words_le = [int.from_bytes(payload[i:i + 2], "little") for i in range(0, len(payload), 2)]
+                words_be = [int.from_bytes(payload[i:i + 2], "big") for i in range(0, len(payload), 2)]
+                parts.append("u16le=" + ",".join(f"0x{w:04X}" for w in words_le))
+                parts.append("u16be=" + ",".join(f"0x{w:04X}" for w in words_be))
+
+        return "[BIN] " + " | ".join(parts)
 
     def parse_lip(self, data: bytes) -> Optional[str]:
         """
@@ -977,78 +1052,75 @@ class TetraProtocolParser:
             
         return None
 
-    def _unpack_gsm7bit(self, data: bytes) -> str:
+    _GSM7_DEFAULT_ALPHABET = [
+        "@", "£", "$", "¥", "è", "é", "ù", "ì", "ò", "Ç", "\n", "Ø", "ø", "\r", "Å", "å",
+        "Δ", "_", "Φ", "Γ", "Λ", "Ω", "Π", "Ψ", "Σ", "Θ", "Ξ", "\x1b", "Æ", "æ", "ß", "É",
+        " ", "!", "\"", "#", "¤", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?",
+        "¡", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
+        "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "Ä", "Ö", "Ñ", "Ü", "§",
+        "¿", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o",
+        "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "ä", "ö", "ñ", "ü", "à",
+    ]
+
+    _GSM7_EXTENSION_TABLE = {
+        0x0A: "\f",
+        0x14: "^",
+        0x28: "{",
+        0x29: "}",
+        0x2F: "\\",
+        0x3C: "[",
+        0x3D: "~",
+        0x3E: "]",
+        0x40: "|",
+        0x65: "€",
+    }
+
+    def _unpack_gsm7bit(self, data: bytes, septet_count: Optional[int] = None) -> str:
         """
-        Unpack GSM 7-bit encoded data.
+        Unpack GSM 03.38 7-bit packed data into text.
+
+        Args:
+            data: Packed septets (octet stream)
+            septet_count: Optional number of septets to decode
         """
-        unpacked = ""
-        shift = 0
-        carry = 0
-        
-        for byte in data:
-            val = (byte >> shift) | (carry << (8 - shift))
-            carry = byte & ((1 << (shift + 1)) - 1) # This logic is wrong for standard GSM
-            
-            # Let's use the standard algorithm
-            # Byte n contains: (7-n) bits of Char n, and (n+1) bits of Char n+1
-            pass
-            
-        # Correct Standard GSM 7-bit Unpacking
-        # Septets are packed into octets.
-        # Octet 0: 1aaaaaaa (7 bits of char 0) + 1 bit of char 1
-        # Octet 1: 22bbbbbb (6 bits of char 1) + 2 bits of char 2
-        
-        unpacked = ""
-        shift = 0
-        carry = 0
-        
-        for byte in data:
-            # Extract current character
-            char_code = (byte >> shift) | (carry << (8 - shift))
-            char_code &= 0x7F
-            unpacked += self._gsm_map(char_code)
-            
-            # Prepare carry for next character
-            # The carry contains the upper bits of the current byte
-            # which belong to the NEXT character
-            # Wait, standard GSM:
-            # Byte 0: 7 bits of char 0 (LSB), 1 bit of char 1 (MSB)
-            # char 0 = Byte 0 & 0x7F
-            # carry = Byte 0 >> 7
-            
-            # Let's try this simple loop
-            pass
-            
-        # Re-implementation
-        unpacked = ""
-        shift = 0
-        carry = 0
-        for byte in data:
-            val = (byte << shift) | carry
-            char_code = val & 0x7F
-            unpacked += self._gsm_map(char_code)
-            
-            carry = byte >> (7 - shift)
-            shift += 1
-            
-            if shift == 7:
-                unpacked += self._gsm_map(carry)
-                carry = 0
-                shift = 0
-                
-        return unpacked
+        if not data:
+            return ""
+
+        septets: List[int] = []
+        bit_buffer = 0
+        bit_length = 0
+
+        for b in data:
+            bit_buffer |= (b << bit_length)
+            bit_length += 8
+            while bit_length >= 7 and (septet_count is None or len(septets) < septet_count):
+                septets.append(bit_buffer & 0x7F)
+                bit_buffer >>= 7
+                bit_length -= 7
+            if septet_count is not None and len(septets) >= septet_count:
+                break
+
+        out: List[str] = []
+        escaped = False
+        for code in septets:
+            if escaped:
+                out.append(self._GSM7_EXTENSION_TABLE.get(code, ""))
+                escaped = False
+                continue
+            if code == 0x1B:
+                escaped = True
+                continue
+            out.append(self._gsm_map(code))
+
+        return "".join(out)
 
     def _gsm_map(self, code: int) -> str:
-        """Map GSM 7-bit code to character."""
-        # Simplified GSM 03.38 mapping (Basic Latin)
-        if 32 <= code <= 126:
-            return chr(code)
-        elif code == 0: return '@'
-        elif code == 2: return '$'
-        elif code == 10: return '\n'
-        elif code == 13: return '\r'
-        # Add more mappings as needed
-        return '.'
+        """Map GSM 03.38 default-alphabet code to character."""
+        if 0 <= code < len(self._GSM7_DEFAULT_ALPHABET):
+            ch = self._GSM7_DEFAULT_ALPHABET[code]
+            return "" if ch == "\x1b" else ch
+        return ""
 
     def _is_valid_text(self, text: str, threshold: float = 0.8) -> bool:
         """Check if string looks like valid human-readable text."""

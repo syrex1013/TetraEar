@@ -13,7 +13,7 @@ from datetime import datetime
 
 def get_project_root():
     """Get the project root directory."""
-    return Path(__file__).parent.parent.absolute()
+    return Path(__file__).resolve().parents[2]
 
 
 def get_version_from_metadata(dist_dir):
@@ -54,7 +54,9 @@ def create_release_package():
     print(f"Version: {version}")
     print()
     
-    # Create release directory
+    # Create a clean release directory (deterministic output)
+    if release_dir.exists():
+        shutil.rmtree(release_dir)
     release_dir.mkdir(parents=True, exist_ok=True)
     
     # Copy files to release directory
@@ -74,19 +76,19 @@ def create_release_package():
             shutil.copy2(src, dst)
             print(f"  [OK] Copied {dll}")
         else:
-            # Try project root
-            src = project_root / dll
+            # Try source tree location
+            src = project_root / "tetraear" / "bin" / dll
             if src.exists():
                 dst = release_dir / dll
                 shutil.copy2(src, dst)
-                print(f"  [OK] Copied {dll} from project root")
+                print(f"  [OK] Copied {dll} from source tree")
             else:
                 print(f"  [WARN] DLL not found: {dll}")
     
     # Copy codec directory
     codec_src = dist_dir / "tetra_codec" / "bin"
     if not codec_src.exists():
-        codec_src = project_root / "tetra_codec" / "bin"
+        codec_src = project_root / "tetraear" / "tetra_codec" / "bin"
     
     if codec_src.exists():
         codec_dst = release_dir / "tetra_codec" / "bin"
@@ -97,33 +99,35 @@ def create_release_package():
         print(f"  [WARN] Codec directory not found")
     
     # Copy README files
-    readme_files = ["README.txt", "README.md"]
-    for readme in readme_files:
-        src = project_root / readme
-        if src.exists():
-            dst = release_dir / readme
-            shutil.copy2(src, dst)
-            print(f"  [OK] Copied {readme}")
+    if (project_root / "README.md").exists():
+        shutil.copy2(project_root / "README.md", release_dir / "README.md")
+        print("  [OK] Copied README.md")
+
+    if (project_root / "CHANGELOG.md").exists():
+        shutil.copy2(project_root / "CHANGELOG.md", release_dir / "CHANGELOG.md")
+        print("  [OK] Copied CHANGELOG.md")
+
+    if (project_root / "RELEASE_NOTES.md").exists():
+        shutil.copy2(project_root / "RELEASE_NOTES.md", release_dir / "RELEASE_NOTES.md")
+        print("  [OK] Copied RELEASE_NOTES.md")
+
+    if (project_root / "keys.example.txt").exists():
+        shutil.copy2(project_root / "keys.example.txt", release_dir / "keys.example.txt")
+        print("  [OK] Copied keys.example.txt")
     
-    # Copy release README if it exists
+    # Create a basic README.txt (Windows-friendly quick start)
     release_readme = release_dir / "README.txt"
-    if not release_readme.exists():
-        # Create a basic README
-        with open(release_readme, 'w') as f:
-            f.write("TETRA Decoder Pro - Windows Binary\n")
-            f.write(f"Version: {version}\n")
-            f.write("\n")
-            f.write("Requirements:\n")
-            f.write("- RTL-SDR dongle with drivers installed\n")
-            f.write("- Windows 10/11\n")
-            f.write("\n")
-            f.write("Usage:\n")
-            f.write("- Run TETRA_Decoder_Modern.exe\n")
-            f.write("- Connect RTL-SDR device\n")
-            f.write("- Tune to TETRA frequency\n")
-            f.write("\n")
-            f.write("For more information, see README.md\n")
-        print(f"  [OK] Created README.txt")
+    with open(release_readme, "w", encoding="utf-8") as f:
+        f.write("TetraEar - Windows Binary\n")
+        f.write(f"Version: {version}\n\n")
+        f.write("Usage:\n")
+        f.write("  - Run TETRA_Decoder_Modern.exe\n\n")
+        f.write("Files:\n")
+        f.write("  - README.md          (full documentation)\n")
+        f.write("  - CHANGELOG.md       (full history)\n")
+        f.write("  - RELEASE_NOTES.md   (what changed)\n")
+        f.write("  - keys.example.txt   (key file format example)\n")
+    print("  [OK] Wrote README.txt")
     
     # Validate required files
     print()

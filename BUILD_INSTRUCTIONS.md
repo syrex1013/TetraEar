@@ -17,7 +17,7 @@ This guide explains how to build a standalone `.exe` file for the TETRA Decoder 
 
 2. **Run the build script**:
    ```bash
-   python build_exe.py
+   python -m tetraear.tools.build_exe
    ```
 
 The script will:
@@ -40,10 +40,10 @@ The executable is standalone and includes:
 - NumPy, SciPy, and other scientific libraries
 - RTL-SDR libraries
 - TETRA codec executables
-- Required DLLs (librtlsdr.dll, libusb-1.0.dll)
+- Required DLLs (`tetraear/bin/librtlsdr.dll`, `tetraear/bin/libusb-1.0.dll`)
 
 You can distribute the single `.exe` file along with:
-- The `tetra_codec/bin/` directory (if not bundled correctly)
+- The `tetraear/tetra_codec/bin/` directory (if not bundled correctly)
 - The DLL files (if not bundled correctly)
 
 ## Troubleshooting
@@ -54,7 +54,7 @@ You can distribute the single `.exe` file along with:
 
 ### Executable doesn't run
 - Check that DLLs are in the same directory as the .exe
-- Ensure `tetra_codec/bin/` directory exists next to the .exe
+- Ensure `tetraear/tetra_codec/bin/` directory exists next to the .exe
 - Run from command line to see error messages
 
 ### Large file size
@@ -63,7 +63,7 @@ You can distribute the single `.exe` file along with:
 
 ## Advanced Options
 
-Edit `build_exe.py` to customize:
+Edit `tetraear/tools/build_exe.py` to customize:
 - Executable name
 - Icon file
 - Additional data files
@@ -78,15 +78,17 @@ If you prefer to build manually:
 pyinstaller --name=TETRA_Decoder_Modern \
     --onefile \
     --windowed \
-    --add-data="librtlsdr.dll;." \
-    --add-data="libusb-1.0.dll;." \
-    --add-data="tetra_codec/bin/*.exe;tetra_codec/bin" \
-    --hidden-import=rtl_capture \
-    --hidden-import=signal_processor \
-    --hidden-import=tetra_decoder \
-    --hidden-import=tetra_crypto \
-    --hidden-import=tetra_protocol \
-    --hidden-import=voice_processor \
-    --hidden-import=frequency_scanner \
-    tetra_gui_modern.py
+    --add-data="tetraear/bin/librtlsdr.dll;tetraear/bin" \
+    --add-data="tetraear/bin/libusb-1.0.dll;tetraear/bin" \
+    --add-data="tetraear/tetra_codec/bin/*.exe;tetraear/tetra_codec/bin" \
+    --add-data="tetraear/assets/*;tetraear/assets" \
+    --hidden-import=tetraear.ui.modern \
+    --hidden-import=tetraear.signal.capture \
+    --hidden-import=tetraear.signal.processor \
+    --hidden-import=tetraear.signal.scanner \
+    --hidden-import=tetraear.core.decoder \
+    --hidden-import=tetraear.core.protocol \
+    --hidden-import=tetraear.core.crypto \
+    --hidden-import=tetraear.audio.voice \
+    tetraear/__main__.py
 ```

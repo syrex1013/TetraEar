@@ -1,5 +1,14 @@
 # TetraEar Changelog
 
+## Version 2.1.1 - December 2025
+
+### 🐛 Bug Fixes
+- **GSM7 Decoding**: Correct GSM 03.38 7-bit unpacking for SDS text messages.
+- **SDS Display**: Keep frames `Description` clean by showing SDS/text in a dedicated `Message` column.
+
+### ✨ Improvements
+- **Binary SDS (Clear)**: `[BIN]` output includes PID + richer previews to help interpret open-air binary payloads.
+
 ## Version 2.1 - December 2024
 
 ### 🐛 Bug Fixes
@@ -10,15 +19,15 @@
 - **Fixed TETRA Status Updates**: Improved detection criteria to show TETRA status when frames are decoded with auto-decrypt enabled
 
 ### ✨ New Features
-- **Build System**: Added `build_exe.py` script for creating standalone Windows executables
-- **Custom Assets**: Added support for custom icon and banner from `assets/` folder
+- **Build System**: Added `tetraear/tools/build_exe.py` for creating standalone Windows executables
+- **Custom Assets**: Added support for custom icon and banner from `tetraear/assets/` folder
 - **About Dialog**: Added About dialog displaying banner image and application information
 - **Debounced Status**: Added 5-second minimum delay before showing "TETRA Signal Detected" to prevent rapid status changes
 - **Adaptive Sync Threshold**: Sync detection now uses adaptive thresholds based on max correlation found
 
 ### 🔧 Improvements
 - **Removed .bat Files**: Replaced batch files with Python build script
-- **Icon Support**: Application icon loaded from `assets/icon_preview.png` or `assets/icon.ico`
+- **Icon Support**: Application icon loaded from `tetraear/assets/icon_preview.png` or `tetraear/assets/icon.ico`
 - **Sample Rate Slider**: Updated to only allow valid RTL-SDR sample rates (1.8, 1.92, 2.048, 2.4, 2.56, 2.88, 3.2 MHz)
 - **Error Handling**: Improved error handling for RTL-SDR access violations and device errors
 - **Status Updates**: More frequent status updates when frames are actively being decoded

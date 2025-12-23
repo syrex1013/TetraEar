@@ -4,7 +4,7 @@ Unit tests for TETRA protocol parser.
 
 import pytest
 import numpy as np
-from tetra_protocol import (
+from tetraear.core.protocol import (
     TetraProtocolParser, BurstType, ChannelType, PDUType,
     TetraBurst, MacPDU, CallMetadata
 )
@@ -116,7 +116,7 @@ class TestTetraProtocolParser:
     
     def test_parse_sds_message(self):
         """Test SDS message parsing."""
-        from tetra_protocol import MacPDU, PDUType
+        from tetraear.core.protocol import MacPDU, PDUType
         
         parser = TetraProtocolParser()
         # Create a MacPDU object (parse_sds_message expects MacPDU, not bytes)

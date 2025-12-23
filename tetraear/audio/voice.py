@@ -3,25 +3,40 @@ TETRA Voice Processor
 Handles TETRA voice decoding using external cdecoder.exe.
 """
 
+from __future__ import annotations
+
 import os
 import logging
 import subprocess
 import tempfile
+from pathlib import Path
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
+codec_logger = logging.getLogger("tetraear.codec")
+
 
 class VoiceProcessor:
     """
     Handles TETRA voice decoding using external cdecoder.exe.
     """
-    def __init__(self):
-        self.codec_path = os.path.join(os.path.dirname(__file__), "tetra_codec", "bin", "cdecoder.exe")
-        self.working = os.path.exists(self.codec_path)
+
+    def __init__(self, codec_path: str | os.PathLike[str] | None = None):
+        """
+        Create a voice decoder.
+
+        Args:
+            codec_path: Optional path to `cdecoder.exe`. If not provided, defaults to
+                `<repo>/tetra_codec/bin/cdecoder.exe` when running from source.
+        """
+        default_codec_path = Path(__file__).resolve().parents[1] / "tetra_codec" / "bin" / "cdecoder.exe"
+        self.codec_path = Path(codec_path) if codec_path is not None else default_codec_path
+        self.working = self.codec_path.exists()
         if not self.working:
-            logger.warning(f"TETRA codec not found at {self.codec_path}")
+            logger.warning("TETRA codec not found at %s", self.codec_path)
         else:
-            logger.debug(f"TETRA codec found at {self.codec_path}")
+            logger.debug("TETRA codec found at %s", self.codec_path)
             
     def decode_frame(self, frame_data: bytes) -> np.ndarray:
         """
@@ -60,22 +75,19 @@ class VoiceProcessor:
             logger.debug(f"Codec input: {len(input_shorts)} shorts, Max: {np.max(np.abs(input_shorts))}, Header: 0x{input_shorts[0]:04X}")
             logger.debug(f"Codec input file: {tmp_in_path}")
             
-            logger.debug(f"Calling codec: {self.codec_path} {tmp_in_path} {tmp_out_path}")
+            codec_logger.debug("Calling codec: %s %s %s", self.codec_path, tmp_in_path, tmp_out_path)
             
             # Run decoder
             # cdecoder.exe input output
             # It might be that cdecoder doesn't like the temp file paths or permissions?
             # Or maybe it needs to be run from its directory?
             
-            codec_dir = os.path.dirname(self.codec_path)
-            codec_exe = os.path.basename(self.codec_path)
-            
             # Use absolute paths for input/output
             abs_in = os.path.abspath(tmp_in_path)
             abs_out = os.path.abspath(tmp_out_path)
             
             # Try shell=False with absolute paths and no cwd
-            result = subprocess.run([self.codec_path, abs_in, abs_out], 
+            result = subprocess.run([str(self.codec_path), abs_in, abs_out], 
                           stdout=subprocess.PIPE, 
                           stderr=subprocess.PIPE,
                           check=False,
@@ -83,17 +95,19 @@ class VoiceProcessor:
             
             # Log codec process output
             if result.stdout:
-                logger.debug(f"Codec STDOUT: {result.stdout.decode('utf-8', errors='ignore').strip()}")
+                codec_logger.debug("STDOUT: %s", result.stdout.decode('utf-8', errors='ignore').strip())
             if result.stderr:
-                logger.debug(f"Codec STDERR: {result.stderr.decode('utf-8', errors='ignore').strip()}")
+                codec_logger.debug("STDERR: %s", result.stderr.decode('utf-8', errors='ignore').strip())
             
             if result.returncode != 0:
-                logger.debug(f"Codec failed with return code {result.returncode}")
+                codec_logger.debug("Codec failed with return code %s", result.returncode)
+            else:
+                codec_logger.debug("Codec exited 0")
             
             # Read output
             if os.path.exists(tmp_out_path) and os.path.getsize(tmp_out_path) > 0:
                 output_size = os.path.getsize(tmp_out_path)
-                logger.debug(f"Codec output file: {tmp_out_path} ({output_size} bytes)")
+                codec_logger.debug("Codec output file: %s (%s bytes)", tmp_out_path, output_size)
                 
                 with open(tmp_out_path, 'rb') as f:
                     pcm_data = f.read()
@@ -111,9 +125,9 @@ class VoiceProcessor:
                     # Check if audio is silent
                     max_amp = np.max(np.abs(audio))
                     if max_amp == 0:
-                        logger.debug("Codec produced silent audio")
+                        codec_logger.debug("Codec produced silent audio")
                     else:
-                        logger.debug(f"Codec produced audio with max amp {max_amp:.4f}")
+                        codec_logger.debug("Codec produced audio with max amp %.4f", max_amp)
                     
                     # Cleanup
                     try:
@@ -149,7 +163,7 @@ class VoiceProcessor:
                     pass
                 return np.zeros(0)
             else:
-                logger.debug(f"Codec produced no output file or empty file (return code: {result.returncode})")
+                codec_logger.debug("Codec produced no output file or empty file (return code: %s)", result.returncode)
                 try:
                     os.remove(tmp_in_path)
                     if os.path.exists(tmp_out_path):

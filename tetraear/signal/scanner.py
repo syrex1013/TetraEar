@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 # Import decoder for frame validation
 try:
-    from signal_processor import SignalProcessor
-    from tetra_decoder import TetraDecoder
+    from tetraear.signal.processor import SignalProcessor
+    from tetraear.core.decoder import TetraDecoder
     DECODER_AVAILABLE = True
 except ImportError:
     DECODER_AVAILABLE = False
@@ -49,6 +49,8 @@ class TetraSignalDetector:
         Returns:
             Power in dB
         """
+        if samples.size == 0:
+            return float(self.bottom_threshold)
         power = np.mean(np.abs(samples) ** 2)
         return 10 * np.log10(power + 1e-10)  # Add small value to avoid log(0)
     

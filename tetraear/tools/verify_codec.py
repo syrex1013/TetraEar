@@ -10,9 +10,11 @@ import struct
 import subprocess
 import tempfile
 import sys
+from pathlib import Path
 
 # Codec paths
-CODEC_DIR = os.path.join(os.path.dirname(__file__), "tetra_codec", "bin")
+TETRAEAR_ROOT = Path(__file__).resolve().parents[1]
+CODEC_DIR = str(TETRAEAR_ROOT / "tetra_codec" / "bin")
 CODECS = {
     'cdecoder': os.path.join(CODEC_DIR, 'cdecoder.exe'),
     'ccoder': os.path.join(CODEC_DIR, 'ccoder.exe'),

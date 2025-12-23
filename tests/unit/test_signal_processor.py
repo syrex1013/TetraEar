@@ -4,7 +4,7 @@ Unit tests for signal processing module.
 
 import pytest
 import numpy as np
-from signal_processor import SignalProcessor
+from tetraear.signal.processor import SignalProcessor
 
 
 @pytest.mark.unit

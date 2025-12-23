@@ -7,8 +7,8 @@ from bitstring import BitArray
 import logging
 from typing import Optional
 
-from tetra_crypto import TEADecryptor, TetraKeyManager
-from tetra_protocol import TetraProtocolParser, TetraBurst, MacPDU, CallMetadata
+from tetraear.core.crypto import TEADecryptor, TetraKeyManager
+from tetraear.core.protocol import TetraProtocolParser, TetraBurst, MacPDU, CallMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -114,15 +114,24 @@ class TetraDecoder:
                 # Convert hex string to bytes
                 key_bytes = bytes.fromhex(key_str)
                 
-                # Determine encryption type based on key length
-                if len(key_bytes) == 10:  # 80 bits = TEA1
+                # Determine encryption type based on key length.
+                # TEA1 uses 80-bit keys (10 bytes); TEA2/TEA3/TEA4 are 128-bit (16 bytes).
+                if len(key_bytes) == 10:
                     self.user_keys.append(('TEA1', key_bytes))
-                elif len(key_bytes) == 16:  # 128 bits = TEA2
+                elif len(key_bytes) == 16:
+                    # Try the same 128-bit key across TEA2/TEA3/TEA4 (practical bruteforce).
                     self.user_keys.append(('TEA2', key_bytes))
-                elif len(key_bytes) == 32:  # 256 bits = TEA3
                     self.user_keys.append(('TEA3', key_bytes))
+                    self.user_keys.append(('TEA4', key_bytes))
+                elif len(key_bytes) == 32:
+                    # Some sources provide 256-bit keys; fall back to first 128 bits.
+                    logger.warning("256-bit key provided; using first 128 bits for TEA2/TEA3/TEA4 attempts")
+                    key_128 = key_bytes[:16]
+                    self.user_keys.append(('TEA2', key_128))
+                    self.user_keys.append(('TEA3', key_128))
+                    self.user_keys.append(('TEA4', key_128))
                 else:
-                    logger.warning(f"Invalid key length: {len(key_bytes)} bytes (expected 10, 16, or 32)")
+                    logger.warning(f"Invalid key length: {len(key_bytes)} bytes (expected 10 or 16)")
             except Exception as e:
                 logger.error(f"Failed to parse key '{key_str}': {e}")
         
@@ -220,35 +229,39 @@ class TetraDecoder:
         all_correlations = []
         
         while i < num_windows:
+            pos = i
+            found_sync = False
+
             # Try both TS1 and TS2
             best_corr_at_pos = 0.0
-            for name, pattern in self.sync_patterns.items():
-                # Full correlation check - removed fragile "quick check"
-                window = bits[i:i+sync_len]
+            for _name, pattern in self.sync_patterns.items():
+                window = bits[pos:pos + sync_len]
                 match_count = np.sum(window == pattern)
                 correlation = match_count / sync_len
-                
-                if correlation > best_corr_at_pos:
-                    best_corr_at_pos = correlation
-                
-                if correlation > max_corr:
-                    max_corr = correlation
-                
+
+                best_corr_at_pos = max(best_corr_at_pos, correlation)
+                max_corr = max(max_corr, correlation)
+
                 if correlation >= threshold:
-                    sync_positions.append(i)
-                    # logger.debug(f"Found {name} sync at position {i}, correlation: {correlation:.2f}")
-                    # Skip ahead to avoid duplicate detections (at least half a frame)
-                    i += 250  # TETRA frame is ~510 bits
-                    break # Found one, move to next frame
-            
+                    sync_positions.append(pos)
+                    found_sync = True
+                    break
+
             # Track correlation at each position for adaptive threshold
             if best_corr_at_pos > 0:
-                all_correlations.append((i, best_corr_at_pos))
-            
+                all_correlations.append((pos, best_corr_at_pos))
+
+            if found_sync:
+                # Skip ahead to avoid duplicate detections (at least half a frame).
+                i = pos + 250  # TETRA frame is ~510 bits
+                continue
+
             i += 1
         
         # If no syncs found but we have a good max correlation close to threshold, use adaptive threshold
         # This prevents dropping frames when max_corr is just below the threshold (e.g., 0.8182 vs 0.85)
+        used_adaptive = False
+        adaptive_threshold = None
         if not sync_positions and max_corr > 0.75 and max_corr >= (threshold - 0.15):
             # Use threshold slightly below max_corr (but not lower than 0.75)
             # Allow up to 0.02 tolerance below threshold if max_corr is close
@@ -264,14 +277,18 @@ class TetraDecoder:
                         # Mark nearby positions as seen to avoid duplicates
                         for nearby in range(max(0, pos - 250), min(num_windows, pos + 250)):
                             seen_positions.add(nearby)
-                
-                if sync_positions:
-                    logger.debug(f"Found {len(sync_positions)} syncs at adaptive threshold {adaptive_threshold:.4f} (max: {max_corr:.4f}, original: {threshold:.4f})")
+
+                used_adaptive = bool(sync_positions)
         
         if not sync_positions:
-             logger.debug(f"No sync found at threshold {threshold}. Max correlation: {max_corr:.4f}")
+            logger.debug(f"No sync found at threshold {threshold:.4f}. Max correlation: {max_corr:.4f}")
+        elif used_adaptive and adaptive_threshold is not None:
+            logger.debug(
+                f"Found {len(sync_positions)} syncs at adaptive threshold {adaptive_threshold:.4f} "
+                f"(max: {max_corr:.4f}, original: {threshold:.4f})"
+            )
         else:
-             logger.debug(f"Found {len(sync_positions)} syncs at threshold {threshold}. Max correlation: {max_corr:.4f}")
+            logger.debug(f"Found {len(sync_positions)} syncs at threshold {threshold:.4f}. Max correlation: {max_corr:.4f}")
         
         if return_max_corr:
             return sync_positions, max_corr
@@ -457,6 +474,14 @@ class TetraDecoder:
                                 'encryption': call_meta.encryption_enabled,
                                 'encryption_alg': call_meta.encryption_algorithm
                             }
+
+                            # If protocol metadata indicates encryption, prefer it and capture the algorithm.
+                            if call_meta.encryption_enabled:
+                                encrypted = True
+                                frame_data['encrypted'] = True
+                                if call_meta.encryption_algorithm:
+                                    encryption_algorithm = call_meta.encryption_algorithm
+                                    frame_data['encryption_algorithm'] = call_meta.encryption_algorithm
                             
                             # Update additional_info with metadata
                             if call_meta.talkgroup_id:
@@ -467,19 +492,35 @@ class TetraDecoder:
                         # Try to decode SDS message if not encrypted
                         # Use reassembled data if available, otherwise use current PDU data
                         payload_to_decode = mac_pdu.reassembled_data if mac_pdu.reassembled_data else mac_pdu.data
-                        
-                        if not mac_pdu.encrypted and len(payload_to_decode) > 0:
-                            # Try parsing as SDS message
+
+                        # SDS parsing/preview for MAC-DATA / MAC-SUPPL.
+                        is_sds_candidate = frame_type_name in ("MAC-DATA", "MAC-SUPPL")
+                        if len(payload_to_decode) > 0 and is_sds_candidate:
                             sds_text = self.protocol_parser.parse_sds_data(payload_to_decode)
-                            if sds_text and not sds_text.startswith("[BIN]"):  # Only if it's actual text, not hex
+                            if sds_text:
                                 frame_data['sds_message'] = sds_text
-                                frame_data['decoded_text'] = sds_text  # Always set decoded_text when sds_message exists
-                                additional_info['sds_text'] = sds_text[:50]  # First 50 chars
-                                
-                                # If reassembled, mark it
+                                # Only promote to decoded_text if it looks like readable output.
+                                if not sds_text.startswith("[BIN"):
+                                    frame_data['decoded_text'] = sds_text
+                                additional_info['sds_text'] = sds_text[:50]
+
                                 if mac_pdu.reassembled_data:
                                     frame_data['is_reassembled'] = True
                                     additional_info['description'] += " (Reassembled)"
+
+                            # Heuristic: some networks mark SDS as clear even when payload is encrypted/binary.
+                            # If SDS looks binary and auto-decrypt is enabled, force a decrypt attempt.
+                            if (
+                                not frame_data.get("encrypted")
+                                and self.auto_decrypt
+                                and sds_text
+                                and sds_text.startswith("[BIN")
+                                and len(payload_to_decode) >= 8
+                            ):
+                                frame_data["encrypted"] = True
+                                frame_data["encryption_suspected"] = True
+                                if not frame_data.get("encryption_algorithm"):
+                                    frame_data["encryption_algorithm"] = "TEA1"
                 except Exception as e:
                     logger.debug(f"MAC PDU parsing error: {e}")
                     # Continue even if MAC parsing fails
@@ -536,17 +577,30 @@ class TetraDecoder:
         algorithm = frame_data.get('encryption_algorithm', 'TEA1')
         key_id = frame_data.get('key_id', '0')
         
-        # Extract payload once (after header, typically starts at bit 32)
-        payload_bits = frame_data['bits'][32:]
-        
-        # Convert to bytes
-        try:
-            payload_bytes = BitArray(payload_bits).tobytes()
-        except Exception as e:
-            frame_data['decrypted'] = False
-            frame_data['decryption_error'] = f'Invalid payload format: {e}'
-            logger.debug(f"Payload format error: {e}")
-            return frame_data
+        # Prefer decrypting the MAC PDU data bytes when available.
+        # This maps better to real payload encryption than raw frame bits.
+        payload_bytes = None
+        mac_pdu = frame_data.get('mac_pdu')
+        if isinstance(mac_pdu, dict) and 'data' in mac_pdu:
+            pdu_data = mac_pdu.get('data')
+            if isinstance(pdu_data, (bytes, bytearray)):
+                payload_bytes = bytes(pdu_data)
+            elif isinstance(pdu_data, str):
+                try:
+                    payload_bytes = bytes.fromhex(pdu_data)
+                except Exception:
+                    payload_bytes = None
+
+        # Fallback: decrypt raw frame payload bits after header
+        if payload_bytes is None:
+            payload_bits = frame_data['bits'][32:]
+            try:
+                payload_bytes = BitArray(payload_bits).tobytes()
+            except Exception as e:
+                frame_data['decrypted'] = False
+                frame_data['decryption_error'] = f'Invalid payload format: {e}'
+                logger.debug(f"Payload format error: {e}")
+                return frame_data
         
         # Ensure payload is multiple of 8 bytes for block cipher
         if len(payload_bytes) < 8:
@@ -566,10 +620,16 @@ class TetraDecoder:
             keys_to_try.append((key, f"{algorithm} key_id={key_id} (from file)"))
             logger.info(f"Trying key from file for {algorithm}")
         
-        # Try user-provided keys FIRST (highest priority)
-        for key_type, key in self.user_keys:
-            if key_type == algorithm:
-                keys_to_try.insert(0, (key, f"{algorithm} user_key (loaded)"))
+        # Try user-provided keys first (highest priority).
+        # Always attempt matching-alg keys first, then cross-try others.
+        user_keys_primary = []
+        user_keys_cross = []
+        for idx, (key_alg, key) in enumerate(self.user_keys):
+            if key_alg == algorithm:
+                user_keys_primary.append((key, f"{key_alg} user_key_{idx} (loaded)", key_alg))
+            else:
+                user_keys_cross.append((key, f"{key_alg} user_key_{idx} (cross-try)", key_alg))
+        keys_to_try[0:0] = user_keys_primary
         
         # ALWAYS add common keys for bruteforce (OpenEar style)
         if algorithm in self.common_keys:
@@ -580,6 +640,9 @@ class TetraDecoder:
         # This handles cases where frames are marked encrypted but are actually clear (network config error)
         keys_to_try.append((None, "BYPASS (Treat as Clear)"))
         
+        # Also cross-try user keys (and common keys) for other algorithms if primary fails.
+        keys_to_try.extend(user_keys_cross)
+
         # Also try with other algorithms if primary fails
         for other_alg in ['TEA1', 'TEA2', 'TEA3', 'TEA4']:
             if other_alg != algorithm and other_alg in self.common_keys:
@@ -650,7 +713,23 @@ class TetraDecoder:
                 if unique_bytes > 1:  # Any diversity is good
                     score += 10
                 
-                # --- Advanced Scoring: Try to parse as MAC PDU ---
+                # --- Advanced Scoring: Prefer plausible SDS decode when decrypting MAC bytes ---
+                try:
+                    sds_text = self.protocol_parser.parse_sds_data(decrypted_payload)
+                    if sds_text:
+                        if sds_text.startswith("[BIN-ENC]"):
+                            # Still looks encrypted/random.
+                            score -= 20
+                        elif sds_text.startswith("[BIN]"):
+                            # Structured binary is still a "valid" decode candidate.
+                            score += 40
+                        else:
+                            # Readable/typed SDS output (TXT/LIP/GSM7/etc).
+                            score += 120
+                except Exception:
+                    pass
+
+                # --- Advanced Scoring: Try to parse as MAC PDU (best-effort) ---
                 try:
                     # Convert bytes to bits for parser
                     decrypted_bits = []

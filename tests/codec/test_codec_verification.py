@@ -16,7 +16,7 @@ from pathlib import Path
 def get_codec_dir():
     """Get codec directory path."""
     project_root = Path(__file__).parent.parent.parent
-    return project_root / "tetra_codec" / "bin"
+    return project_root / "tetraear" / "tetra_codec" / "bin"
 
 
 CODECS = {

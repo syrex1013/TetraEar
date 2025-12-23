@@ -4,7 +4,7 @@ Unit tests for TETRA encryption/decryption module.
 
 import pytest
 import struct
-from tetra_crypto import TEADecryptor, TetraKeyManager
+from tetraear.core.crypto import TEADecryptor, TetraKeyManager
 
 
 @pytest.mark.unit

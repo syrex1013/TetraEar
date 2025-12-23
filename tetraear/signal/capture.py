@@ -6,23 +6,40 @@ import os
 import sys
 from pathlib import Path
 
-# Add current directory to DLL search path (Windows)
-if sys.platform == 'win32':
+# Add bundled DLL search paths (Windows).
+if sys.platform == "win32":
     try:
-        current_dir = Path(__file__).parent.absolute()
-        dll_path = str(current_dir)
-        # Add to PATH environment variable
-        if dll_path not in os.environ.get('PATH', ''):
-            os.environ['PATH'] = dll_path + os.pathsep + os.environ.get('PATH', '')
-        # Also try add_dll_directory for Python 3.8+
-        if hasattr(os, 'add_dll_directory'):
-            os.add_dll_directory(dll_path)
+        tetraear_root = Path(__file__).resolve().parents[1]
+        dll_dir = tetraear_root / "bin"
+
+        for dll_path in (dll_dir, tetraear_root):
+            if not dll_path.exists():
+                continue
+            dll_path_str = str(dll_path)
+            if dll_path_str not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = dll_path_str + os.pathsep + os.environ.get("PATH", "")
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(dll_path_str)
     except (OSError, AttributeError):
         pass  # Fallback if methods fail
 
 import numpy as np
-from rtlsdr import RtlSdr
 import logging
+import warnings
+
+# Lazy import of RtlSdr to avoid DLL loading issues during import
+try:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"pkg_resources is deprecated as an API\..*",
+            category=UserWarning,
+        )
+        from rtlsdr import RtlSdr
+    RTL_SDR_AVAILABLE = True
+except (ImportError, OSError):
+    RTL_SDR_AVAILABLE = False
+    RtlSdr = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +62,19 @@ class RTLCapture:
         self.sdr = None
         
     def open(self):
-        """Open and configure RTL-SDR device."""
+        """
+        Open and configure RTL-SDR device.
+        
+        Returns:
+            bool: True if device opened successfully, False otherwise
+        
+        Raises:
+            RuntimeError: If RTL-SDR library is not available
+        """
+        if not RTL_SDR_AVAILABLE:
+            logger.error("RTL-SDR library not available")
+            return False
+        
         try:
             self.sdr = RtlSdr()
             

@@ -5,7 +5,7 @@ Integration tests for frequency scanner.
 import pytest
 import numpy as np
 from unittest.mock import Mock, MagicMock, patch
-from frequency_scanner import TetraSignalDetector
+from tetraear.signal.scanner import TetraSignalDetector
 
 
 @pytest.mark.integration
@@ -72,28 +72,36 @@ class TestTetraSignalDetector:
     
     def test_scan_frequency_range_mock(self):
         """Test frequency scanning with mocked RTL-SDR."""
-        from rtl_capture import RTLCapture
+        import tetraear.signal.capture as capture_module
+        from tetraear.signal.capture import RTLCapture
         
         detector = TetraSignalDetector()
         
         # Mock RTL-SDR capture
-        with patch('rtl_capture.RtlSdr') as mock_rtl:
-            mock_sdr = MagicMock()
-            mock_rtl.return_value = mock_sdr
-            mock_sdr.get_device_serial_addresses.return_value = ['00000001']
-            
-            # Mock sample reading
-            mock_samples = np.random.randn(10000) + 1j * np.random.randn(10000)
-            mock_sdr.read_samples.return_value = mock_samples
-            
-            capture = RTLCapture()
-            if capture.open():
+        original_available = capture_module.RTL_SDR_AVAILABLE
+        try:
+            capture_module.RTL_SDR_AVAILABLE = True
+            with patch.object(capture_module, "RtlSdr") as mock_rtl:
+                mock_sdr = MagicMock()
+                mock_rtl.return_value = mock_sdr
+                mock_sdr.get_device_serial_addresses.return_value = ["00000001"]
+
+                # Mock sample reading
+                mock_samples = np.random.randn(10000) + 1j * np.random.randn(10000)
+                mock_sdr.read_samples.return_value = mock_samples
+
+                capture = RTLCapture()
+                assert capture.open() is True
+
                 samples = capture.read_samples(10000)
                 power = detector.calculate_power(samples)
                 assert isinstance(power, float)
-                
+
                 is_tetra, confidence = detector.detect_tetra_modulation(samples)
                 assert isinstance(is_tetra, bool)
+                assert isinstance(confidence, float)
+        finally:
+            capture_module.RTL_SDR_AVAILABLE = original_available
     
     def test_signal_strength_calculation(self, sample_iq_samples):
         """Test signal strength calculation."""

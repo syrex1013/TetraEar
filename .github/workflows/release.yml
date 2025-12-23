@@ -26,20 +26,20 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
     
       - name: Run unit tests
         run: |
-          pytest tests/unit -v --cov=. --cov-report=xml --cov-report=term
+          python -m pytest tests/unit -v --cov=. --cov-report=xml --cov-report=term
     
       - name: Run integration tests
         run: |
-          pytest tests/integration -v
+          python -m pytest tests/integration -v
     
       - name: Run codec verification tests
         run: |
-          pytest tests/codec -v -m codec
+          python -m pytest tests/codec -v -m codec
     
       - name: Upload coverage reports
         uses: codecov/codecov-action@v3
@@ -67,12 +67,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
     
       - name: Build executable
         run: |
-          python build_exe.py
+          python -m tetraear.tools.build_exe
         env:
           CI: true
     
@@ -115,21 +115,20 @@ jobs:
           python-version: '3.11'
     
       - name: Create release package
-        run: |
-          python scripts/create_release_package.py
-        env:
-          CI: true
-    
-      - name: Extract version and zip path
         id: package
         run: |
-          $output = python scripts/create_release_package.py 2>&1 | Select-String "RELEASE_VERSION="
-          $version = $output -replace "RELEASE_VERSION=", ""
+          $output = python -m tetraear.tools.create_release_package 2>&1
+          $versionLine = ($output | Select-String "^RELEASE_VERSION=").Line
+          $zipLine = ($output | Select-String "^RELEASE_ZIP=").Line
+          if (-not $versionLine) { throw "RELEASE_VERSION not found in output" }
+          if (-not $zipLine) { throw "RELEASE_ZIP not found in output" }
+          $version = $versionLine -replace "^RELEASE_VERSION=", ""
+          $zipPath = $zipLine -replace "^RELEASE_ZIP=", ""
           echo "version=$version" >> $env:GITHUB_OUTPUT
-          
-          $zipOutput = python scripts/create_release_package.py 2>&1 | Select-String "RELEASE_ZIP="
-          $zipPath = $zipOutput -replace "RELEASE_ZIP=", ""
           echo "zip_path=$zipPath" >> $env:GITHUB_OUTPUT
+          $output
+        env:
+          CI: true
       
       - name: Upload release package
         uses: actions/upload-artifact@v4

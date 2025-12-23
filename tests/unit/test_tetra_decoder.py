@@ -5,8 +5,8 @@ Unit tests for TETRA decoder module.
 import pytest
 import numpy as np
 from bitstring import BitArray
-from tetra_decoder import TetraDecoder
-from tetra_crypto import TetraKeyManager
+from tetraear.core.decoder import TetraDecoder
+from tetraear.core.crypto import TetraKeyManager
 
 
 @pytest.mark.unit
