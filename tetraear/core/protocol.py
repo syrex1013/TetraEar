@@ -297,33 +297,36 @@ class TetraProtocolParser:
         if len(bits) < 16:
             return False
         
-        # SIMPLIFIED: For now, use heuristics instead of strict CRC
-        # Real TETRA CRC is complex with interleaving and puncturing
-        
-        # Heuristic 1: Check for reasonable bit distribution
-        ones = np.sum(bits)
+        # SIMPLIFIED: Use a soft CRC check since we do not do full channel decoding.
+        ones = int(np.sum(bits))
         zeros = len(bits) - ones
-        bit_ratio = min(ones, zeros) / max(ones, zeros) if max(ones, zeros) > 0 else 0
-        
-        # STRICTER: Random noise often has balanced bits (ratio ~1.0)
-        # But real data also has balanced bits.
-        # The previous check (>0.15) was too loose for noise.
-        # We can't rely on bit ratio alone.
-        
-        # Heuristic 2: Try actual CRC on payload
+        if ones == 0 or zeros == 0:
+            return False
+
         try:
             payload = bits[:-16]
             received_crc = bits[-16:]
             calculated_crc = self._calculate_crc16(payload)
             
-            # Allow some bit errors (TETRA has FEC)
-            errors = np.sum(calculated_crc != received_crc)
-            
-            # STRICTER: Only allow 0 errors for CRC check to pass
-            # If we are not doing channel decoding, CRC should match if signal is clean
-            return errors == 0
-        except:
+            errors = int(np.sum(calculated_crc != received_crc))
+            if errors == 0:
+                return True
+
+            # Allow a small error budget without channel decoding.
+            if errors <= 2:
+                return True
+
+            # Try reversed bit order to handle endianness mismatches.
+            reversed_crc = self._calculate_crc16(payload[::-1])
+            errors_rev = int(np.sum(reversed_crc != received_crc))
+            if errors_rev == 0:
+                return True
+            if errors_rev <= 2:
+                return True
+        except Exception:
             return False
+        
+        return False
     
     def _calculate_crc16(self, bits: np.ndarray) -> np.ndarray:
         """Calculate CRC-16-CCITT (polynomial 0x1021)."""
@@ -481,9 +484,16 @@ class TetraProtocolParser:
                     self.mnc = int(''.join(str(b) for b in bits[pos+10:pos+24]), 2)
                     self.colour_code = int(''.join(str(b) for b in bits[pos+24:pos+30]), 2)
                     
-                    # STRICT CHECK: MCC/MNC sanity
-                    if self.mcc == 0 or self.mcc > 999: return None
-                    if self.mnc > 9999: return None
+                    # STRICT CHECK: MCC/MNC sanity - Real TETRA networks
+                    # MCC must be 200-799 (valid ITU-T E.212 range)
+                    if self.mcc < 200 or self.mcc > 799:
+                        logger.debug(f"Invalid MCC {self.mcc} in SYNC - not real TETRA")
+                        return None
+                    if self.mnc > 999:
+                        logger.debug(f"Invalid MNC {self.mnc} in SYNC - not real TETRA")
+                        return None
+                    
+                    logger.info(f"Valid TETRA SYNC: MCC={self.mcc} MNC={self.mnc}")
                 else:
                     return None
             
@@ -741,10 +751,23 @@ class TetraProtocolParser:
             # Colour Code: 6 bits (often follows)
             colour_code = bits[24:30].uint
             
+            # VALIDATE: Real TETRA networks use MCC 200-799 (ITU-T E.212)
+            # Values outside this range indicate noise/invalid data
+            if mcc < 200 or mcc > 799:
+                logger.debug(f"Invalid MCC {mcc} - likely noise, not real TETRA")
+                return None
+            
+            # VALIDATE: MNC should be reasonable (0-999 typically)
+            if mnc > 999:
+                logger.debug(f"Invalid MNC {mnc} - likely noise, not real TETRA")
+                return None
+            
             # Update parser state
             self.mcc = mcc
             self.mnc = mnc
             self.colour_code = colour_code
+            
+            logger.info(f"Decoded TETRA network: MCC={mcc} MNC={mnc} CC={colour_code}")
             
             # Return metadata with just network info
             return CallMetadata(
@@ -812,14 +835,6 @@ class TetraProtocolParser:
         # Example 2: SDS with GSM 7-bit (07 00 Length ...)
         if len(data) > 3 and data[0] == 0x07 and data[1] == 0x00:
             # User example: 07 00 D2 D4 79 9E 2F 03 -> STATUS OK
-            def score_text(text: str) -> float:
-                if not text:
-                    return 0.0
-                printable = sum(1 for c in text if c.isprintable() and c not in "\x1b")
-                alnum = sum(1 for c in text if c.isalnum() or c.isspace())
-                alpha = sum(1 for c in text if c.isalpha())
-                return (printable / len(text)) + (alnum / len(text)) + (0.5 if alpha > 0 else 0.0)
-
             candidates: List[str] = []
 
             # Some SDS payloads include a septet count at offset 2.
@@ -829,20 +844,25 @@ class TetraProtocolParser:
                 max_septets = (len(payload_3) * 8) // 7
                 if 0 < septet_count <= min(160, max_septets):
                     candidates.append(self._unpack_gsm7bit(payload_3, septet_count=septet_count))
+                    candidates.append(self._unpack_gsm7bit_with_udh(payload_3, septet_count=septet_count))
                 candidates.append(self._unpack_gsm7bit(payload_3))
+                candidates.append(self._unpack_gsm7bit_with_udh(payload_3))
 
             # Fallback: decode starting at offset 2 (treat offset-2 byte as packed content).
             payload_2 = data[2:]
             if payload_2:
                 candidates.append(self._unpack_gsm7bit(payload_2))
+                candidates.append(self._unpack_gsm7bit_with_udh(payload_2))
 
             best = ""
             best_score = 0.0
+            seen = set()
             for text in candidates:
                 text = text.strip("\x00").strip()
-                if not text:
+                if not text or text in seen:
                     continue
-                s = score_text(text)
+                seen.add(text)
+                s = self._score_text(text)
                 if s > best_score:
                     best_score = s
                     best = text
@@ -917,13 +937,28 @@ class TetraProtocolParser:
              except:
                 pass
         
-        # Try GSM 7-bit unpacking as last resort
+        # Try GSM 7-bit unpacking as last resort (with UDH handling)
         try:
-            text = self._unpack_gsm7bit(test_data).strip("\x00").strip()
-            if self._is_valid_text(text, threshold=0.55):
+            candidates = [
+                self._unpack_gsm7bit(test_data),
+                self._unpack_gsm7bit_with_udh(test_data),
+            ]
+            best = ""
+            best_score = 0.0
+            seen = set()
+            for text in candidates:
+                text = text.strip("\x00").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                score = self._score_text(text)
+                if score > best_score:
+                    best_score = score
+                    best = text
+            if best and self._is_valid_text(best, threshold=0.55):
                 self.stats['data_messages'] += 1
-                return f"[GSM7] {text}"
-        except:
+                return f"[GSM7] {best}"
+        except Exception:
             pass
         
         # Check for Encrypted Binary SDS (High Entropy)
@@ -1076,30 +1111,44 @@ class TetraProtocolParser:
         0x65: "€",
     }
 
-    def _unpack_gsm7bit(self, data: bytes, septet_count: Optional[int] = None) -> str:
+    def _unpack_gsm7bit(
+        self,
+        data: bytes,
+        septet_count: Optional[int] = None,
+        skip_bits: int = 0,
+    ) -> str:
         """
         Unpack GSM 03.38 7-bit packed data into text.
 
         Args:
             data: Packed septets (octet stream)
             septet_count: Optional number of septets to decode
+            skip_bits: Number of leading bits to skip (for UDH alignment)
         """
         if not data:
             return ""
 
-        septets: List[int] = []
-        bit_buffer = 0
-        bit_length = 0
-
+        bits: List[int] = []
         for b in data:
-            bit_buffer |= (b << bit_length)
-            bit_length += 8
-            while bit_length >= 7 and (septet_count is None or len(septets) < septet_count):
-                septets.append(bit_buffer & 0x7F)
-                bit_buffer >>= 7
-                bit_length -= 7
-            if septet_count is not None and len(septets) >= septet_count:
-                break
+            for i in range(8):
+                bits.append((b >> i) & 1)
+
+        if skip_bits:
+            if skip_bits >= len(bits):
+                return ""
+            bits = bits[skip_bits:]
+
+        max_septets = len(bits) // 7
+        if septet_count is None or septet_count > max_septets:
+            septet_count = max_septets
+
+        septets: List[int] = []
+        for idx in range(septet_count):
+            base = idx * 7
+            val = 0
+            for offset in range(7):
+                val |= (bits[base + offset] << offset)
+            septets.append(val)
 
         out: List[str] = []
         escaped = False
@@ -1115,12 +1164,51 @@ class TetraProtocolParser:
 
         return "".join(out)
 
+    def _unpack_gsm7bit_with_udh(self, data: bytes, septet_count: Optional[int] = None) -> str:
+        """
+        Unpack GSM 03.38 7-bit packed data with UDH handling.
+
+        The first octet is treated as UDHL when it yields a plausible header length.
+        """
+        if not data or len(data) < 2:
+            return ""
+
+        udh_len = data[0]
+        if udh_len <= 0:
+            return ""
+
+        udh_total = udh_len + 1
+        if udh_total > len(data):
+            return ""
+
+        skip_bits = udh_total * 8
+        payload_septets = None
+        if septet_count is not None:
+            udh_septets = (skip_bits + 6) // 7
+            if septet_count > udh_septets:
+                payload_septets = septet_count - udh_septets
+
+        return self._unpack_gsm7bit(
+            data,
+            septet_count=payload_septets,
+            skip_bits=skip_bits,
+        )
+
     def _gsm_map(self, code: int) -> str:
         """Map GSM 03.38 default-alphabet code to character."""
         if 0 <= code < len(self._GSM7_DEFAULT_ALPHABET):
             ch = self._GSM7_DEFAULT_ALPHABET[code]
             return "" if ch == "\x1b" else ch
         return ""
+
+    def _score_text(self, text: str) -> float:
+        """Score decoded text to select the most plausible candidate."""
+        if not text:
+            return 0.0
+        printable = sum(1 for c in text if c.isprintable() and c not in "\x1b")
+        alnum = sum(1 for c in text if c.isalnum() or c.isspace())
+        alpha = sum(1 for c in text if c.isalpha())
+        return (printable / len(text)) + (alnum / len(text)) + (0.5 if alpha > 0 else 0.0)
 
     def _is_valid_text(self, text: str, threshold: float = 0.8) -> bool:
         """Check if string looks like valid human-readable text."""
@@ -1133,7 +1221,7 @@ class TetraProtocolParser:
             return False
             
         # Check ratio of printable characters
-        printable = sum(1 for c in text if 32 <= ord(c) <= 126 or c in '\n\r\t')
+        printable = sum(1 for c in text if c.isprintable() or c in '\n\r\t')
         ratio = printable / len(text)
         
         # Check for excessive repetition (padding)

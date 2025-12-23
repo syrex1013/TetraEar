@@ -118,6 +118,7 @@ def _setup_logging(verbose: bool) -> dict[str, Path]:
       - `decoder_<run>.log`   (decoder/protocol)
       - `codec_<run>.log`     (codec calls + stdout/stderr)
       - `audio_<run>.log`     (recording + audio pipeline)
+      - `frames_<run>.log`    (frames table rows as JSONL)
     """
     log_dir = _get_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +129,7 @@ def _setup_logging(verbose: bool) -> dict[str, Path]:
         "decoder": log_dir / f"decoder_{_RUN_ID}.log",
         "codec": log_dir / f"codec_{_RUN_ID}.log",
         "audio": log_dir / f"audio_{_RUN_ID}.log",
+        "frames": log_dir / f"frames_{_RUN_ID}.log",
     }
 
     fmt = logging.Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")
@@ -145,6 +147,7 @@ def _setup_logging(verbose: bool) -> dict[str, Path]:
     decoder_handler = make_file_handler(files["decoder"], filt=_PrefixFilter("tetraear.core.decoder", "tetraear.core.protocol"))
     codec_handler = make_file_handler(files["codec"], filt=_PrefixFilter("tetraear.codec"))
     audio_handler = make_file_handler(files["audio"], filt=_PrefixFilter("tetraear.recording", "tetraear.audio"))
+    frames_handler = make_file_handler(files["frames"], level=logging.INFO, filt=_PrefixFilter("tetraear.frames"))
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -158,6 +161,7 @@ def _setup_logging(verbose: bool) -> dict[str, Path]:
     root.addHandler(decoder_handler)
     root.addHandler(codec_handler)
     root.addHandler(audio_handler)
+    root.addHandler(frames_handler)
     root.addHandler(console_handler)
 
     # Route `warnings.warn(...)` through logging too.
@@ -168,6 +172,7 @@ def _setup_logging(verbose: bool) -> dict[str, Path]:
 
 logger = logging.getLogger(__name__)
 audio_logger = logging.getLogger("tetraear.recording")
+frames_logger = logging.getLogger("tetraear.frames")
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -189,8 +194,131 @@ from tetraear.signal.capture import RTLCapture
 from tetraear.signal.processor import SignalProcessor
 from tetraear.core.decoder import TetraDecoder
 from tetraear.core.crypto import TetraKeyManager
+from tetraear.core.mcc_mnc import get_location_info
+from tetraear.core.validator import TetraSignalValidator
+from tetraear.core.location import LocationParser
 from tetraear.signal.scanner import FrequencyScanner
 from tetraear.audio.voice import VoiceProcessor
+
+
+def _is_readable_text(text: str) -> bool:
+    """Check if text is actually human-readable (not garbled GSM7/encrypted)."""
+    if not text or len(text) < 3:
+        return False
+    
+    # Remove common prefixes and quotes
+    clean = text
+    for prefix in ['[GSM7]', '[TXT]', '[SDS]', '[SDS-1]', '[SDS-GSM]', '[LIP]', '[LOC]', '[GPS]', '[BIN-ENC]', '[BIN]', '💬', '🧩', '"']:
+        clean = clean.replace(prefix, '')
+    clean = clean.strip()
+    
+    if len(clean) < 3:
+        return False
+    
+    # Check for GSM7 special characters that indicate garbled text (expanded)
+    gsm7_specials = set('ΩΔΣΘΞΛΓΦΨΠåæÅÆØøÇÉÑÜßìÌíÍîÎïÏòÒóÓôÔõÕöÖùÙúÚûÛüÜ¿¡¢£¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾')
+    special_count = sum(1 for c in clean if c in gsm7_specials)
+    
+    # If ANY special characters, it's likely garbled (very strict)
+    if special_count > 0:
+        return False
+    
+    # Check for high-byte characters that aren't in normal text
+    high_byte_count = sum(1 for c in clean if ord(c) > 127)
+    if len(clean) > 0 and high_byte_count / len(clean) > 0.05:
+        return False
+    
+    # Check for non-printable ASCII characters
+    control_chars = sum(1 for c in clean if ord(c) < 32 and c not in '\n\r\t')
+    if control_chars > 0:
+        return False
+    
+    # Check for ASCII alphanumeric content or spaces
+    ascii_readable = sum(1 for c in clean if (c.isalnum() or c.isspace()) and ord(c) < 128)
+    
+    # Need at least 70% ASCII readable characters (very strict)
+    if len(clean) > 0 and ascii_readable / len(clean) < 0.70:
+        return False
+    
+    # Check for minimum alphanumeric content
+    alnum_count = sum(1 for c in clean if c.isalnum())
+    if len(clean) > 0 and alnum_count / len(clean) < 0.50:
+        return False
+    
+    # Check for reasonable word structure - should have some spaces or clear word boundaries
+    # If it's random gibberish, it won't have natural word patterns
+    if len(clean) > 10:
+        # Count lowercase letters (natural text has many)
+        lowercase_count = sum(1 for c in clean if c.islower())
+        if lowercase_count / len(clean) < 0.20:  # Less than 20% lowercase = suspicious
+            return False
+        
+        # Check for word-like patterns (letters with spaces)
+        words = clean.split()
+        if len(words) > 1:
+            # Check if "words" look reasonable (mostly letters)
+            valid_words = sum(1 for w in words if len(w) > 0 and sum(1 for c in w if c.isalpha()) / len(w) > 0.5)
+            if valid_words / len(words) < 0.5:
+                return False
+    elif len(clean) <= 10:
+        # For short strings, be extra strict
+        # Must have at least one lowercase letter
+        if not any(c.islower() for c in clean):
+            # Exception for short status codes like "OK", "ACK", etc.
+            if not (len(clean) <= 4 and clean.isupper() and clean.isalpha()):
+                return False
+    
+    return True
+
+
+def _format_location_data(frame: dict) -> str:
+    """Format location data nicely."""
+    text = frame.get('decoded_text', '') or frame.get('sds_message', '')
+    
+    if '[LIP]' in text or '[LOC]' in text:
+        # Try to parse latitude/longitude
+        if 'Lat:' in text and 'Lon:' in text:
+            return f"📍 {text}"
+        else:
+            # Just hex location data
+            hex_data = text.split(':', 1)[-1].strip() if ':' in text else text
+            return f"📍 Location Data: {hex_data[:40]}..."
+    
+    if '[GPS]' in text:
+        return f"🛰️ {text}"
+    
+    return None
+
+
+def _format_binary_metadata(frame: dict) -> str:
+    """Format binary metadata and control frames."""
+    if '[BIN-ENC]' in str(frame.get('decoded_text', '')):
+        # This is encrypted binary data
+        text = frame.get('decoded_text', '')
+        if 'bytes' in text:
+            # Extract byte count
+            return f"🔐 Encrypted Binary Data ({text})"
+        return "🔐 Encrypted Binary Data"
+    
+    # Check for control frame types
+    type_name = frame.get('type_name', '')
+    if type_name == 'MAC-RESOURCE':
+        info = frame.get('additional_info', {})
+        if info.get('talkgroup'):
+            return f"📡 Resource Allocation: TG {info['talkgroup']}"
+        return "📡 Resource Allocation"
+    
+    if type_name == 'MAC-BROADCAST':
+        info = frame.get('additional_info', {})
+        desc = info.get('description', '')
+        if 'Broadcast' in desc or 'info' in desc.lower():
+            return f"📢 Network Broadcast: {desc}"
+        return "📢 Network Broadcast"
+    
+    if type_name in ['MAC-FRAG', 'MAC-END/RES']:
+        return f"🔗 {type_name} (Fragment/Control)"
+    
+    return None
 
 
 import json
@@ -201,7 +329,7 @@ class SettingsManager:
     DEFAULT_SETTINGS = {
         "save_silence": False,
         "export_mp3": False,
-        "auto_decrypt": False,
+        "auto_decrypt": True,
         "monitor_audio": False,
         "monitor_raw": False,
         "gain": 50.0,
@@ -1750,12 +1878,15 @@ class CaptureThread(QThread):
             
             self.processor = SignalProcessor(sample_rate=self.sample_rate)
             self.decoder = TetraDecoder(auto_decrypt=self.auto_decrypt)
-            
+            logger.info("Auto-Decrypt: %s", "ON" if self.auto_decrypt else "OFF")
+             
             # Pass encryption keys to decoder if we have them
             if self.encryption_keys:
                 self.decoder.set_keys(self.encryption_keys)
                 logger.info(f"Passed {len(self.encryption_keys)} encryption keys to decoder")
-            
+            else:
+                logger.info("No user keys loaded (using common keys only)")
+             
             self.voice_processor = VoiceProcessor()
             
             self.status_update.emit(f"✓ Started - {self.frequency/1e6:.3f} MHz")
@@ -2387,7 +2518,7 @@ class ModernTetraGUI(QMainWindow):
         
         # Set application icon
         self.set_app_icon()
-        
+
         self.capture_thread = None
         self.frame_count = 0
         self.decrypted_count = 0
@@ -2426,6 +2557,9 @@ class ModernTetraGUI(QMainWindow):
         self.settings_manager = SettingsManager()
         self.freq_manager = FrequencyManager()
         
+        # TETRA signal validator (expect Poland MCC 260)
+        self.signal_validator = TetraSignalValidator(expected_country_mcc=260)
+        
         self.init_ui()
         self.apply_modern_style()
         
@@ -2439,6 +2573,45 @@ class ModernTetraGUI(QMainWindow):
         
         # Initialize audio
         self.init_audio()
+
+        # Auto-size table columns periodically (throttled) so columns fit content.
+        self._autosize_state: dict[str, int] = {}
+        self._autosize_timer = QTimer(self)
+        self._autosize_timer.timeout.connect(self._autosize_tables)
+        self._autosize_timer.start(2000)
+        QTimer.singleShot(0, self._autosize_tables)
+
+    def _autosize_table(self, table: QTableWidget, *, max_width: int = 520) -> None:
+        """Resize columns to fit contents, clamping overly wide columns."""
+        try:
+            table.resizeColumnsToContents()
+            for col in range(table.columnCount()):
+                if table.columnWidth(col) > max_width:
+                    table.setColumnWidth(col, max_width)
+        except Exception:
+            pass
+
+    def _autosize_tables(self) -> None:
+        """Auto-size all tables when row count changes."""
+        tables: list[tuple[str, QTableWidget, int]] = []
+        if hasattr(self, "frames_table"):
+            tables.append(("frames_table", self.frames_table, 600))
+        if hasattr(self, "calls_table"):
+            tables.append(("calls_table", self.calls_table, 320))
+        if hasattr(self, "groups_table"):
+            tables.append(("groups_table", self.groups_table, 320))
+        if hasattr(self, "users_table"):
+            tables.append(("users_table", self.users_table, 360))
+
+        for name, table, cap in tables:
+            try:
+                rows = table.rowCount()
+                if self._autosize_state.get(name) == rows:
+                    continue
+                self._autosize_state[name] = rows
+                self._autosize_table(table, max_width=cap)
+            except Exception:
+                continue
     
     def load_settings(self):
         """Load initial settings."""
@@ -2853,7 +3026,8 @@ class ModernTetraGUI(QMainWindow):
         options_group = QGroupBox("Options")
         options_layout = QVBoxLayout()
         self.auto_decrypt_cb = QCheckBox("Auto-Decrypt")
-        self.auto_decrypt_cb.setChecked(False)
+        self.auto_decrypt_cb.setChecked(True)
+        self.auto_decrypt_cb.toggled.connect(self.on_auto_decrypt_toggled)
         options_layout.addWidget(self.auto_decrypt_cb)
         
         self.hear_voice_cb = QCheckBox("🔊 Monitor Audio")
@@ -3025,9 +3199,9 @@ class ModernTetraGUI(QMainWindow):
         
         # Table (no scroll area wrapper needed for QTableWidget)
         self.frames_table = QTableWidget()
-        self.frames_table.setColumnCount(8)  # Added Message column
+        self.frames_table.setColumnCount(9)  # Added Country column
         self.frames_table.setHorizontalHeaderLabels([
-            "Time", "Frame #", "Type", "Description", "Message", "Encrypted", "Status", "Data"
+            "⏱ Time", "# Frame", "📋 Type", "📝 Description", "💬 Message", "🔐 Encrypted", "✅ Status", "📊 Data", "🌍 Country"
         ])
         # Column widths with stretch factors
         self.frames_table.setColumnWidth(0, 80)
@@ -3038,6 +3212,7 @@ class ModernTetraGUI(QMainWindow):
         self.frames_table.setColumnWidth(5, 80)
         self.frames_table.setColumnWidth(6, 180)
         self.frames_table.setColumnWidth(7, 250)  # Data column width
+        self.frames_table.setColumnWidth(8, 150)  # Country column width
         
         # Set column stretch modes for better scaling
         header = self.frames_table.horizontalHeader()
@@ -3110,7 +3285,7 @@ class ModernTetraGUI(QMainWindow):
         self.calls_table = QTableWidget()
         self.calls_table.setColumnCount(10)
         self.calls_table.setHorizontalHeaderLabels([
-            "Time", "MCarrier", "Carrier", "Slot", "CallID", "Pri", "Type", "From", "To", "Mode"
+            "⏱ Time", "📡 MCarrier", "📻 Carrier", "🎰 Slot", "🆔 CallID", "⭐ Pri", "📋 Type", "👤 From", "👥 To", "🔒 Mode"
         ])
         self.calls_table.setAlternatingRowColors(True)
         self.calls_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -3128,9 +3303,9 @@ class ModernTetraGUI(QMainWindow):
         
         # Table
         self.groups_table = QTableWidget()
-        self.groups_table.setColumnCount(7)
+        self.groups_table.setColumnCount(7)  # Back to 7 columns
         self.groups_table.setHorizontalHeaderLabels([
-            "GSSI", "LO", "REC", "MCC", "MNC", "Priority", "Name"
+            "🆔 GSSI", "⏱ Last Seen", "🔴 REC", "🌍 MCC", "📍 MNC", "⭐ Priority", "📛 Name/Country"
         ])
         self.groups_table.setAlternatingRowColors(True)
         self.groups_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -3160,9 +3335,9 @@ class ModernTetraGUI(QMainWindow):
         
         # Table
         self.users_table = QTableWidget()
-        self.users_table.setColumnCount(7)
+        self.users_table.setColumnCount(7)  # Back to 7 columns
         self.users_table.setHorizontalHeaderLabels([
-            "ISSI", "LO", "GSSI", "MCC", "MNC", "Name", "Location"
+            "🆔 ISSI", "⏱ Last Seen", "👥 GSSI", "🌍 MCC", "📍 MNC", "📛 Name", "📌 Location/Country"
         ])
         self.users_table.setAlternatingRowColors(True)
         self.users_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -3458,6 +3633,18 @@ class ModernTetraGUI(QMainWindow):
         """Handle raw monitor toggle."""
         if self.capture_thread:
             self.capture_thread.set_monitor_raw(checked)
+
+    def on_auto_decrypt_toggled(self, checked):
+        """Handle auto-decrypt toggle."""
+        try:
+            self.settings_manager.set("auto_decrypt", bool(checked))
+            self.settings_manager.save()
+        except Exception as exc:
+            logger.debug("Failed to persist auto-decrypt setting: %s", exc)
+        if self.capture_thread:
+            self.capture_thread.auto_decrypt = bool(checked)
+            if getattr(self.capture_thread, "decoder", None):
+                self.capture_thread.decoder.auto_decrypt = bool(checked)
 
     def on_preset_changed(self, text):
         """Handle frequency preset."""
@@ -4016,6 +4203,16 @@ class ModernTetraGUI(QMainWindow):
         if 'decoded_text' in frame and frame['decoded_text']:
             # Already has decoded text
             return frame['decoded_text']
+
+        # Don't attempt to parse SDS from encrypted frames unless they were decrypted.
+        if frame.get("encrypted") and not frame.get("decrypted"):
+            return None
+
+        # Only attempt single-frame SDS parsing on SDS-candidate PDUs.
+        mac_pdu = frame.get("mac_pdu") if isinstance(frame.get("mac_pdu"), dict) else {}
+        pdu_type = str(mac_pdu.get("type", "")).upper()
+        type_name = str(frame.get("type_name", "")).upper()
+        is_sds_pdu = pdu_type in ("MAC_DATA", "MAC_SUPPL") or ("MAC-DATA" in type_name) or ("MAC-SUPPL" in type_name) or ("MAC-END" in type_name) or ("MAC-END/RES" in type_name)
         
         # Multi-frame SDS reassembly logic
         # Check if this is a fragmented SDS message
@@ -4076,6 +4273,9 @@ class ModernTetraGUI(QMainWindow):
                         return f"🧩 {sds_text}"
         
         # Try to parse single-frame SDS from decrypted bytes or MAC data
+        if not is_sds_pdu:
+            return None
+
         data = None
         if 'decrypted_bytes' in frame:
             try:
@@ -4273,10 +4473,6 @@ class ModernTetraGUI(QMainWindow):
 
     def update_tables(self, frame):
         """Update Calls, Groups, and Users tables."""
-        # Double check auto-decrypt setting - safeguard against unwanted population
-        if not self.auto_decrypt_cb.isChecked():
-            return
-
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         # Extract metadata
@@ -4350,13 +4546,21 @@ class ModernTetraGUI(QMainWindow):
                         self.groups_table.setItem(r, 3, QTableWidgetItem(fmt(meta.get('mcc'))))
                     if not self.groups_table.item(r, 4).text():
                         self.groups_table.setItem(r, 4, QTableWidgetItem(fmt(meta.get('mnc'))))
+                    
+                    # Update Name/Country column
+                    mcc = meta.get('mcc')
+                    mnc = meta.get('mnc')
+                    if mcc:
+                        country_str = get_location_info(str(mcc), str(mnc) if mnc else None)
+                        name_str = f"👥 Group {gssi} ({country_str})"
+                        self.groups_table.setItem(r, 6, QTableWidgetItem(name_str))
                     break
             
             if not found:
                 row = self.groups_table.rowCount()
                 self.groups_table.insertRow(row)
                 self.groups_table.setItem(row, 0, QTableWidgetItem(gssi))
-                self.groups_table.setItem(row, 1, QTableWidgetItem(timestamp)) # LO
+                self.groups_table.setItem(row, 1, QTableWidgetItem(timestamp)) # Last Seen
                 
                 rec_status = "🔴" if self.recording_active else ""
                 self.groups_table.setItem(row, 2, QTableWidgetItem(rec_status)) # REC
@@ -4364,7 +4568,16 @@ class ModernTetraGUI(QMainWindow):
                 self.groups_table.setItem(row, 3, QTableWidgetItem(fmt(meta.get('mcc')))) # MCC
                 self.groups_table.setItem(row, 4, QTableWidgetItem(fmt(meta.get('mnc')))) # MNC
                 self.groups_table.setItem(row, 5, QTableWidgetItem(fmt(meta.get('priority')))) # Priority
-                self.groups_table.setItem(row, 6, QTableWidgetItem(f"Group {gssi}")) # Name (Placeholder)
+                
+                # Name/Country column (combined)
+                mcc = meta.get('mcc')
+                mnc = meta.get('mnc')
+                if mcc:
+                    country_str = get_location_info(str(mcc), str(mnc) if mnc else None)
+                    name_str = f"👥 Group {gssi} ({country_str})"
+                else:
+                    name_str = f"👥 Group {gssi}"
+                self.groups_table.setItem(row, 6, QTableWidgetItem(name_str)) # Name/Country
 
         # Update Users Table (if ISSI present)
         # Columns: ISSI, LO, GSSI, MCC, MNC, Name, Location
@@ -4386,30 +4599,49 @@ class ModernTetraGUI(QMainWindow):
                     if meta.get('mcc'): self.users_table.setItem(r, 3, QTableWidgetItem(str(meta['mcc'])))
                     if meta.get('mnc'): self.users_table.setItem(r, 4, QTableWidgetItem(str(meta['mnc'])))
                     
-                    # Update Location if present in SDS
-                    sds_msg = frame.get('sds_message', '')
-                    if "[LIP]" in sds_msg or "[GPS]" in sds_msg:
-                        # Extract location part
-                        loc_data = sds_msg.replace("[LIP]", "").replace("[GPS]", "").strip()
-                        self.users_table.setItem(r, 6, QTableWidgetItem(loc_data))
+                    # Update Location/Country column (combined)
+                    loc_str = ""
+                    
+                    # Try to extract GPS coordinates
+                    gps_data = LocationParser.extract_location_from_frame(frame)
+                    if gps_data:
+                        loc_str = f"📍 {gps_data['formatted']}"
+                    else:
+                        # No GPS, show country from MCC/MNC
+                        mcc = meta.get('mcc')
+                        mnc = meta.get('mnc')
+                        if mcc:
+                            loc_str = get_location_info(str(mcc), str(mnc) if mnc else None)
+                    
+                    if loc_str:
+                        self.users_table.setItem(r, 6, QTableWidgetItem(loc_str))
                     break
             
             if not found:
                 row = self.users_table.rowCount()
                 self.users_table.insertRow(row)
                 self.users_table.setItem(row, 0, QTableWidgetItem(issi))
-                self.users_table.setItem(row, 1, QTableWidgetItem(timestamp)) # LO
+                self.users_table.setItem(row, 1, QTableWidgetItem(timestamp)) # Last Seen
                 self.users_table.setItem(row, 2, QTableWidgetItem(fmt(meta.get('talkgroup_id')))) # GSSI
                 self.users_table.setItem(row, 3, QTableWidgetItem(fmt(meta.get('mcc')))) # MCC
                 self.users_table.setItem(row, 4, QTableWidgetItem(fmt(meta.get('mnc')))) # MNC
-                self.users_table.setItem(row, 5, QTableWidgetItem(f"User {issi}")) # Name (Placeholder)
+                self.users_table.setItem(row, 5, QTableWidgetItem(f"👤 User {issi}")) # Name with icon
                 
-                # Location
-                loc_data = ""
-                sds_msg = frame.get('sds_message', '')
-                if "[LIP]" in sds_msg or "[GPS]" in sds_msg:
-                    loc_data = sds_msg.replace("[LIP]", "").replace("[GPS]", "").strip()
-                self.users_table.setItem(row, 6, QTableWidgetItem(loc_data)) # Location
+                # Location/Country column (combined)
+                loc_str = ""
+                
+                # Try to extract GPS coordinates
+                gps_data = LocationParser.extract_location_from_frame(frame)
+                if gps_data:
+                    loc_str = f"📍 {gps_data['formatted']}"
+                else:
+                    # No GPS, show country from MCC/MNC
+                    mcc = meta.get('mcc')
+                    mnc = meta.get('mnc')
+                    if mcc:
+                        loc_str = get_location_info(str(mcc), str(mnc) if mnc else None)
+                
+                self.users_table.setItem(row, 6, QTableWidgetItem(loc_str)) # Location/Country
 
         # Update filters
         call_group = None
@@ -4427,22 +4659,60 @@ class ModernTetraGUI(QMainWindow):
     def on_frame(self, frame):
         """Handle decoded frame."""
         self.frame_count += 1
-        
-        # Only update tables if auto-decrypt is enabled
-        # If disabled, we only want to verify signal status (stats)
-        if self.auto_decrypt_cb.isChecked():
-            # Update new tables
-            self.update_tables(frame)
-            
-            # Try SDS reassembly first
-            reassembled_sds = self.reassemble_sds_message(frame)
-            if reassembled_sds:
-                frame['sds_message'] = reassembled_sds
-                frame['is_reassembled'] = True
-        else:
-            # Debug log to verify logic
-            # logger.debug("Skipping table update (Auto-Decrypt disabled)")
+
+        # Always log each decoded frame (even if UI filters hide it).
+        try:
+            import json
+
+            frames_logger.info(
+                json.dumps(
+                    {
+                        "event": "frame_decoded",
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "frame_number": frame.get("number"),
+                        "type": frame.get("type"),
+                        "type_name": frame.get("type_name"),
+                        "encrypted": bool(frame.get("encrypted")),
+                        "encryption_algorithm": frame.get("encryption_algorithm"),
+                        "decrypted": bool(frame.get("decrypted")),
+                        "decryption_attempted": bool(frame.get("decryption_attempted")),
+                        "keys_tried": frame.get("keys_tried"),
+                        "best_score": frame.get("best_score"),
+                        "best_key": frame.get("best_key"),
+                        "key_used": frame.get("key_used"),
+                        "decrypt_confidence": frame.get("decrypt_confidence"),
+                        "decryption_error": frame.get("decryption_error"),
+                        "additional_info": frame.get("additional_info", {}),
+                        "sds_message": frame.get("sds_message"),
+                        "decoded_text": frame.get("decoded_text"),
+                        "has_voice": bool(frame.get("has_voice")),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        except Exception:
             pass
+        
+        # VALIDATE FRAME: Check if this is real TETRA
+        is_valid, confidence, issues = self.signal_validator.validate_frame(frame)
+        
+        if not is_valid:
+            # Log invalid frames but don't display them
+            logger.debug(f"Invalid TETRA frame: confidence={confidence:.1%}, issues={issues}")
+            return  # Skip this frame
+        
+        if confidence < 0.7:
+            # Low confidence frame - log warning
+            logger.warning(f"Low confidence TETRA frame: {confidence:.1%}, issues={issues}")
+        
+        # Update tables regardless of auto-decrypt setting.
+        self.update_tables(frame)
+        
+        # Try SDS reassembly first
+        reassembled_sds = self.reassemble_sds_message(frame)
+        if reassembled_sds:
+            frame['sds_message'] = reassembled_sds
+            frame['is_reassembled'] = True
         
         # Check if this is test data FIRST - don't count test frames for TETRA detection
         is_test = frame.get('is_test_data', False)
@@ -4462,7 +4732,7 @@ class ModernTetraGUI(QMainWindow):
             # Check for valid CRC (indicates valid frame structure)
             if frame.get('burst_crc') is True:
                 self.tetra_valid_frames += 1
-            elif frame.get('decrypted'):
+            elif frame.get('decrypted') or frame.get('bypass_clear'):
                 # Decrypted frames are strong evidence of valid TETRA
                 self.tetra_valid_frames += 1
             elif 'burst_crc' not in frame and frame.get('type') is not None:
@@ -4495,11 +4765,6 @@ class ModernTetraGUI(QMainWindow):
         
         if frame.get('decrypted'):
             self.decrypted_count += 1
-        
-        # Don't populate frames table if auto-decrypt/auto-decode is disabled
-        # User only wants to see signal status, not decoded frames
-        if not self.auto_decrypt_cb.isChecked():
-            return
         
         # Check filter before adding
         type_name = frame.get('type_name', "Unknown")
@@ -4598,10 +4863,32 @@ class ModernTetraGUI(QMainWindow):
                 desc += f" | {info['control']}"
         
         message_text = ""
-        if frame.get('sds_message'):
-            sds = frame['sds_message']
-            prefix = "🧩 " if frame.get('is_reassembled') else "💬 "
-            message_text = f"{prefix}\"{sds[:80]}\""
+        # Check for readable message text
+        text_to_check = frame.get('sds_message') or frame.get('decoded_text') or ''
+        if text_to_check:
+            if _is_readable_text(text_to_check):
+                # Clean and show readable text
+                clean = text_to_check
+                for prefix in ['[GSM7]', '[TXT]', '[SDS]', '[SDS-1]', '[SDS-GSM]', '💬', '🧩']:
+                    clean = clean.replace(prefix, '')
+                clean = clean.strip().strip('"')
+                prefix_icon = "🧩 " if frame.get('is_reassembled') else "💬 "
+                message_text = f"{prefix_icon}\"{clean.strip()[:80]}\""
+            else:
+                # Check if it's location/metadata
+                location = _format_location_data(frame)
+                if location:
+                    message_text = location
+                else:
+                    metadata = _format_binary_metadata(frame)
+                    if metadata:
+                        message_text = metadata
+                    else:
+                        # Don't show garbled text - just show "Decrypted" if decrypted
+                        if frame.get('decrypted'):
+                            message_text = "✅ Decrypted"
+                        else:
+                            message_text = "🔒 (Encrypted)"
         
         # Mark test data
         if is_test:
@@ -4611,12 +4898,17 @@ class ModernTetraGUI(QMainWindow):
         self.frames_table.setItem(row, 4, create_item(message_text))
         
         enc_text = "Yes" if frame.get('encrypted') else "No"
-        if frame.get('encrypted'):
-            alg = frame.get('encryption_algorithm', '')
-            if alg:
-                enc_text += f" ({alg})"
+        if frame.get("encryption_suspected") and not frame.get("encrypted"):
+            enc_text = "Suspected"
+
+        if frame.get('encrypted') or frame.get("encryption_suspected"):
+            alg = frame.get('encryption_algorithm') or 'Unknown'
+            enc_text += f" ({alg})"
         
-        enc_color = QColor(255, 100, 100) if frame.get('encrypted') else QColor(100, 255, 100)
+        if frame.get('encrypted') or frame.get("encryption_suspected"):
+            enc_color = QColor(255, 100, 100)
+        else:
+            enc_color = QColor(100, 255, 100)
         self.frames_table.setItem(row, 5, create_item(enc_text, enc_color))
         
         status_text = ""
@@ -4624,109 +4916,194 @@ class ModernTetraGUI(QMainWindow):
         if frame.get('decrypted'):
             confidence = frame.get('decrypt_confidence', 0)
             key_used = frame.get('key_used', 'unknown')
-            status_text = f"✓ Decrypted ({confidence}) | {key_used}"
+            status_text = f"✅ Decrypted ({confidence}) | {key_used}"
             status_color = QColor(0, 255, 255)
+        elif frame.get("bypass_clear"):
+            status_text = "🟢 Clear (Bypass)"
+            status_color = QColor(100, 255, 100)
+        elif frame.get("decryption_attempted"):
+            keys_tried = frame.get("keys_tried", 0)
+            best_score = frame.get("best_score", 0)
+            best_key = frame.get("best_key") or "n/a"
+            status_text = f"🔑 Bruteforce tried {keys_tried} | best {best_score} | {best_key}"
+            status_color = QColor(200, 200, 120)
         elif frame.get('encrypted'):
-            alg = frame.get('encryption_algorithm', 'Unknown')
-            status_text = f"🔒 Encrypted ({alg})"
+            alg = frame.get('encryption_algorithm') or 'Unknown'
+            if not self.auto_decrypt_cb.isChecked():
+                status_text = f"🔒 Encrypted ({alg}) | Auto-Decrypt off"
+            else:
+                status_text = f"🔒 Encrypted ({alg})"
             status_color = QColor(255, 165, 0)
         else:
             status_text = "Clear"
             
         self.frames_table.setItem(row, 6, create_item(status_text, status_color))
         
-        # Data Column - Prioritize decoded text
+        # Data Column - Prioritize decoded text but filter garbled
         data_str = ""
         if frame.get('has_voice'):
              data_str = "🔊 Voice Audio (Decoded)"
-        elif 'decoded_text' in frame and frame['decoded_text']:
-             data_str = f"📝 {frame['decoded_text']}"
-        elif 'sds_message' in frame and frame['sds_message']:
-             data_str = f"📝 {frame['sds_message']}"
-        elif 'decrypted_bytes' in frame:
-             # Try to parse decrypted bytes as text if printable
-             try:
-                 data_bytes = bytes.fromhex(frame['decrypted_bytes'])
-                 if len(data_bytes) > 0:
-                     printable_count = sum(1 for b in data_bytes if 32 <= b <= 126 or b in (10, 13))
-                     if (printable_count / len(data_bytes)) > 0.7:
-                         # Try to decode as text
-                         text = data_bytes.decode('latin-1', errors='replace')
-                         text = ''.join(c if (32 <= ord(c) <= 126 or c in '\n\r') else ' ' for c in text)
-                         text = text.strip()
-                         if text:
-                             data_str = f"📝 [TXT] {text[:100]}"  # Limit length
-                         else:
-                             # Show hex if text is empty after cleaning
-                             hex_str = data_bytes.hex()
-                             data_str = ' '.join(hex_str[i:i+2] for i in range(0, min(len(hex_str), 64), 2))
-                             if len(hex_str) > 64:
-                                 data_str += "..."
-                     else:
-                         # Show hex for binary data
-                         hex_str = data_bytes.hex()
-                         data_str = ' '.join(hex_str[i:i+2] for i in range(0, min(len(hex_str), 64), 2))
-                         if len(hex_str) > 64:
-                             data_str += "..."
-                 else:
-                     data_str = "(empty)"
-             except Exception as e:
-                 logger.debug(f"Error parsing decrypted bytes: {e}")
-                 data_str = "(parse error)"
-        elif 'mac_pdu' in frame and 'data' in frame['mac_pdu']:
-            data = frame['mac_pdu']['data']
-            if isinstance(data, (bytes, bytearray)):
-                # Try to decode as text first
-                try:
-                    printable_count = sum(1 for b in data if 32 <= b <= 126 or b in (10, 13))
-                    if len(data) > 0 and (printable_count / len(data)) > 0.7:
-                        text = data.decode('latin-1', errors='replace')
-                        text = ''.join(c if (32 <= ord(c) <= 126 or c in '\n\r') else ' ' for c in text)
-                        text = text.strip()
-                        if text:
-                            data_str = f"📝 {text[:100]}"
-                        else:
-                            hex_str = data.hex()
-                            data_str = ' '.join(hex_str[i:i+2] for i in range(0, min(len(hex_str), 64), 2))
-                    else:
-                        # Format as hex with spaces
-                        hex_str = data.hex()
-                        data_str = ' '.join(hex_str[i:i+2] for i in range(0, min(len(hex_str), 64), 2))
-                        if len(hex_str) > 64:
-                            data_str += "..."
-                except:
-                    hex_str = data.hex()
-                    data_str = ' '.join(hex_str[i:i+2] for i in range(0, min(len(hex_str), 64), 2))
-            else:
-                data_str = str(data)[:100]
-        elif 'bits' in frame:
-             # Show first few bytes of raw bits if nothing else
-             try:
-                 bits = frame['bits']
-                 if hasattr(bits, 'tobytes'):
-                     data_bytes = bits.tobytes()
-                     if len(data_bytes) > 0:
-                         printable_count = sum(1 for b in data_bytes if 32 <= b <= 126 or b in (10, 13))
-                         if (printable_count / len(data_bytes)) > 0.7:
-                             text = data_bytes.decode('latin-1', errors='replace')
-                             text = ''.join(c if (32 <= ord(c) <= 126 or c in '\n\r') else ' ' for c in text)
-                             text = text.strip()
-                             if text:
-                                 data_str = f"📝 {text[:50]}"
-                             else:
-                                 data_str = data_bytes.hex()[:50]
-                         else:
-                             data_str = data_bytes.hex()[:50]
-                     else:
-                         data_str = "(empty)"
-                 else:
-                     data_str = str(bits)[:50] + "..."
-             except:
-                 data_str = "(parse error)"
         else:
-            data_str = "(no data)"
+            # Check for location data first
+            location_str = _format_location_data(frame)
+            if location_str:
+                data_str = location_str
+            # Check for readable text
+            elif 'decoded_text' in frame and frame['decoded_text']:
+                text = frame['decoded_text']
+                if _is_readable_text(text):
+                    # Clean text - remove prefix
+                    clean = text
+                    for prefix in ['[GSM7]', '[TXT]', '[SDS]', '[SDS-1]', '[SDS-GSM]', '💬', '🧩']:
+                        clean = clean.replace(prefix, '')
+                    clean = clean.strip().strip('"')
+                    data_str = f"💬 {clean.strip()[:80]}"
+                else:
+                    # Check if it's binary/metadata
+                    metadata_str = _format_binary_metadata(frame)
+                    if metadata_str:
+                        data_str = metadata_str
+                    else:
+                        # Garbled text - just say decrypted if it was
+                        if frame.get('decrypted'):
+                            data_str = "✅ Decrypted (garbled)"
+                        else:
+                            data_str = "🔒 (Encrypted)"
+            elif 'sds_message' in frame and frame['sds_message']:
+                text = frame['sds_message']
+                if _is_readable_text(text):
+                    clean = text
+                    for prefix in ['[GSM7]', '[TXT]', '[SDS]', '[SDS-1]', '[SDS-GSM]', '💬', '🧩']:
+                        clean = clean.replace(prefix, '')
+                    clean = clean.strip().strip('"')
+                    data_str = f"💬 {clean.strip()[:80]}"
+                else:
+                    metadata_str = _format_binary_metadata(frame)
+                    if metadata_str:
+                        data_str = metadata_str
+                    else:
+                        if frame.get('decrypted'):
+                            data_str = "✅ Decrypted (garbled)"
+                        else:
+                            data_str = "🔒 (Encrypted)"
+            elif 'decrypted_bytes' in frame:
+                # Try to parse decrypted bytes as text if printable
+                try:
+                    data_bytes = bytes.fromhex(frame['decrypted_bytes'])
+                    if len(data_bytes) > 0:
+                        # Try to decode as text
+                        text = data_bytes.decode('latin-1', errors='replace')
+                        # Check if text is actually readable
+                        if _is_readable_text(text):
+                            clean = text.strip()
+                            data_str = f"💬 {clean[:80]}"
+                        else:
+                            # Not readable - show as decrypted but garbled
+                            if frame.get('decrypted'):
+                                data_str = "✅ Decrypted (garbled)"
+                            else:
+                                data_str = "🔒 (Binary data)"
+                    else:
+                        data_str = "✅ Decrypted (empty)"
+                except Exception as e:
+                    logger.debug(f"Error parsing decrypted bytes: {e}")
+                    data_str = "✅ Decrypted (parse error)"
+            elif 'mac_pdu' in frame and 'data' in frame['mac_pdu']:
+                data = frame['mac_pdu']['data']
+                if isinstance(data, (bytes, bytearray)):
+                    # Try to decode as text
+                    try:
+                        text = data.decode('latin-1', errors='replace')
+                        if _is_readable_text(text):
+                            clean = text.strip()
+                            data_str = f"💬 {clean[:80]}"
+                        else:
+                            # Binary or garbled data
+                            if frame.get('decrypted'):
+                                data_str = "✅ Decrypted (garbled)"
+                            else:
+                                data_str = "🔒 (Binary data)"
+                    except:
+                        data_str = "🔒 (Binary data)"
+                else:
+                    # Non-bytes data - check if readable
+                    text = str(data)
+                    if _is_readable_text(text):
+                        data_str = f"💬 {text[:80]}"
+                    else:
+                        data_str = "🔒 (Binary data)"
+            elif 'bits' in frame:
+                # Raw bits - try to decode but filter garbled
+                try:
+                    bits = frame['bits']
+                    if hasattr(bits, 'tobytes'):
+                        data_bytes = bits.tobytes()
+                        if len(data_bytes) > 0:
+                            text = data_bytes.decode('latin-1', errors='replace')
+                            if _is_readable_text(text):
+                                clean = text.strip()
+                                data_str = f"💬 {clean[:80]}"
+                            else:
+                                # Binary data - don't show hex
+                                data_str = "🔒 (Binary data)"
+                        else:
+                            data_str = "(empty)"
+                    else:
+                        data_str = "🔒 (Binary data)"
+                except:
+                    data_str = "🔒 (Binary data)"
+            else:
+                data_str = ""
                   
         self.frames_table.setItem(row, 7, create_item(data_str))
+        
+        # Country column (new) - extract from MCC/MNC
+        country_str = ""
+        if 'call_metadata' in frame:
+            meta = frame['call_metadata']
+            mcc = meta.get('mcc')
+            mnc = meta.get('mnc')
+            if mcc:
+                country_str = get_location_info(str(mcc), str(mnc) if mnc else None)
+        elif 'additional_info' in frame:
+            info = frame['additional_info']
+            mcc = info.get('mcc')
+            mnc = info.get('mnc')
+            if mcc:
+                country_str = get_location_info(str(mcc), str(mnc) if mnc else None)
+        
+        self.frames_table.setItem(row, 8, create_item(country_str))
+
+        # Persist full frames table row to dedicated JSONL log.
+        try:
+            import json
+
+            frames_logger.info(
+                json.dumps(
+                    {
+                        "time": time_str,
+                        "frame_number": frame.get("number"),
+                        "type": type_name,
+                        "description": desc,
+                        "message": message_text,
+                        "encrypted": bool(frame.get("encrypted")),
+                        "encryption_algorithm": frame.get("encryption_algorithm"),
+                        "decrypted": bool(frame.get("decrypted")),
+                        "status": status_text,
+                        "data": data_str,
+                        "keys_tried": frame.get("keys_tried"),
+                        "best_score": frame.get("best_score"),
+                        "best_key": frame.get("best_key"),
+                        "key_used": frame.get("key_used"),
+                        "decrypt_confidence": frame.get("decrypt_confidence"),
+                        "sds_message": frame.get("sds_message"),
+                        "decoded_text": frame.get("decoded_text"),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        except Exception:
+            pass
         
         # Auto-scroll
         if self.autoscroll_cb.isChecked():

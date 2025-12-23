@@ -156,6 +156,22 @@ class VoiceProcessor:
             serial_size = os.path.getsize(tmp_serial_path)
             codec_logger.debug("cdecoder serial output: %s (%s bytes)", tmp_serial_path, serial_size)
 
+            # Basic sanity checks on cdecoder output: it should contain (BFI + 137) int16 words per speech frame.
+            # Typical output is 2 speech frames per channel frame: 2 * 138 * 2 bytes = 552 bytes.
+            try:
+                import struct
+
+                with open(tmp_serial_path, "rb") as f:
+                    raw = f.read(min(serial_size, 552))
+                if len(raw) >= 2:
+                    bfi1 = struct.unpack("<h", raw[:2])[0]
+                    bfi2 = None
+                    if len(raw) >= 276 + 2:
+                        bfi2 = struct.unpack("<h", raw[276:278])[0]
+                    codec_logger.debug("cdecoder BFI: frame1=%s frame2=%s", bfi1, bfi2)
+            except Exception:
+                pass
+
             # Step 2: speech decoding (serial vocoder bits -> synthesized samples)
             codec_logger.debug("Calling sdecoder: %s %s %s", self.sdecoder_path, abs_serial, abs_synth)
             result2 = subprocess.run(
@@ -201,6 +217,19 @@ class VoiceProcessor:
             audio = audio_i16.astype(np.float32) / 32768.0
             max_amp = float(np.max(np.abs(audio))) if audio.size else 0.0
             codec_logger.debug("Codec produced %d samples (max amp %.4f)", audio.size, max_amp)
+
+            # Many bad/incorrect inputs produce "valid" output files that are all zeros.
+            # Treat near-silent output as a decode failure so the GUI can show "no voice" instead of recording silence.
+            if max_amp < 1e-5:
+                codec_logger.debug("Codec produced near-silent audio; treating as decode failure")
+                if not keep_temp:
+                    try:
+                        os.remove(tmp_in_path)
+                        os.remove(tmp_serial_path)
+                        os.remove(tmp_synth_path)
+                    except Exception:
+                        pass
+                return np.zeros(0)
 
             if not keep_temp:
                 try:

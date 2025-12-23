@@ -450,12 +450,18 @@ class TetraDecoder:
                                     logger.debug(f"Frame {frame_number}: High entropy ({entropy_ratio:.2f}) suggests encryption despite clear flag")
                                     encrypted = True
                                     frame_data['encrypted'] = True
+                                    frame_data["encryption_suspected"] = True
                                 else:
                                     # Low entropy - likely clear mode
                                     encrypted = False
                                     frame_data['encrypted'] = False
                                     frame_data['encryption_algorithm'] = None
                                     logger.debug(f"Frame {frame_number}: Low entropy ({entropy_ratio:.2f}) confirms clear mode")
+                                    # Medium entropy can still indicate encryption on some networks (or partially decoded payloads).
+                                    if entropy_ratio > 0.55 and total_bytes > 8:
+                                        frame_data["encryption_suspected"] = True
+                                        if not frame_data.get("encryption_algorithm"):
+                                            frame_data["encryption_algorithm"] = "TEA1"
                             else:
                                 # No data to check - trust MAC PDU flag
                                 encrypted = False
@@ -495,7 +501,8 @@ class TetraDecoder:
 
                         # SDS parsing/preview for MAC-DATA / MAC-SUPPL.
                         is_sds_candidate = frame_type_name in ("MAC-DATA", "MAC-SUPPL")
-                        if len(payload_to_decode) > 0 and is_sds_candidate:
+                        sds_text = None
+                        if len(payload_to_decode) > 0 and is_sds_candidate and not frame_data.get("encrypted"):
                             sds_text = self.protocol_parser.parse_sds_data(payload_to_decode)
                             if sds_text:
                                 frame_data['sds_message'] = sds_text
@@ -527,8 +534,11 @@ class TetraDecoder:
         except Exception as e:
             logger.debug(f"Protocol parsing error: {e}")
         
-        # NOW attempt decryption if marked as encrypted
-        if frame_data.get('encrypted') and (self.key_manager or self.auto_decrypt):
+        # Attempt decryption if marked encrypted or suspicious (auto-decrypt).
+        should_try_decrypt = bool(frame_data.get("encrypted") or frame_data.get("encryption_suspected"))
+        if should_try_decrypt and not frame_data.get("encryption_algorithm"):
+            frame_data["encryption_algorithm"] = "TEA1"
+        if should_try_decrypt and (self.key_manager or self.auto_decrypt):
             frame_data = self._decrypt_frame(frame_data)
             
             # If decryption successful, try to parse SDS again with decrypted data
@@ -574,8 +584,14 @@ class TetraDecoder:
         Returns:
             Updated frame data with decrypted payload
         """
-        algorithm = frame_data.get('encryption_algorithm', 'TEA1')
+        algorithm = frame_data.get('encryption_algorithm') or 'TEA1'
         key_id = frame_data.get('key_id', '0')
+
+        # Track bruteforce status for UI/logging even when decryption fails.
+        frame_data["decryption_attempted"] = True
+        frame_data["keys_tried"] = 0
+        frame_data["best_score"] = 0
+        frame_data["best_key"] = None
         
         # Prefer decrypting the MAC PDU data bytes when available.
         # This maps better to real payload encryption than raw frame bits.
@@ -655,6 +671,8 @@ class TetraDecoder:
             frame_data['decryption_error'] = 'No keys available'
             logger.warning("No keys available for decryption")
             return frame_data
+
+        frame_data["keys_tried"] = len(keys_to_try)
         
         logger.info(f"Trying {len(keys_to_try)} keys for frame {frame_data['number']}")
         
@@ -752,6 +770,8 @@ class TetraDecoder:
                 if score > best_score:
                     best_score = score
                     best_result = (decrypted_payload, key_desc)
+                    frame_data["best_score"] = best_score
+                    frame_data["best_key"] = key_desc
                 
                 # Lower threshold - accept more attempts
                 if score > 80:  # Was 50, increased due to CRC bonus
@@ -762,25 +782,43 @@ class TetraDecoder:
                 logger.debug(f"Key {key_desc} failed: {e}")
                 continue
         
-        # Use the best result if we found one (more lenient threshold)
-        if best_result and best_score > 10:  # Was > 0, now > 10 to avoid total garbage
+        # Use the best result if we found one. Keep this strict to avoid "garbage decrypted" frames.
+        if best_result and best_score >= 80:
             decrypted_payload, key_desc = best_result
-            
+
+            # Special case: BYPASS doesn't decrypt; it indicates the frame is likely clear/mis-flagged.
+            if str(key_desc).startswith("BYPASS"):
+                frame_data["bypass_clear"] = True
+                frame_data["encrypted"] = False
+                frame_data["encryption_algorithm"] = None
+                frame_data["decrypted"] = False
+                frame_data["decryption_error"] = None
+                frame_data["best_score"] = best_score
+                frame_data["best_key"] = key_desc
+                logger.info(
+                    "[OK] Frame %s treated as clear (BYPASS) (score: %s)",
+                    frame_data.get("number"),
+                    best_score,
+                )
+                return frame_data
+
             # Convert back to bits
             decrypted_bits = BitArray(decrypted_payload)
-            
+
             frame_data['decrypted'] = True
             frame_data['decrypted_payload'] = decrypted_bits.bin
             frame_data['decrypted_bytes'] = decrypted_payload.hex()
             frame_data['key_used'] = key_desc
             frame_data['decrypt_confidence'] = best_score
-            
+            frame_data["best_score"] = best_score
+            frame_data["best_key"] = key_desc
+
             # Update algorithm if detected from key
             if "TEA1" in key_desc: frame_data['encryption_algorithm'] = "TEA1"
             elif "TEA2" in key_desc: frame_data['encryption_algorithm'] = "TEA2"
             elif "TEA3" in key_desc: frame_data['encryption_algorithm'] = "TEA3"
             elif "TEA4" in key_desc: frame_data['encryption_algorithm'] = "TEA4"
-            
+
             logger.info(f"[OK] Decrypted frame {frame_data['number']} using {key_desc} (confidence: {best_score})")
         else:
             # All keys failed or low confidence
@@ -790,6 +828,7 @@ class TetraDecoder:
             else:
                 frame_data['decryption_error'] = f'Tried {len(keys_to_try)} key(s), best score: {best_score}'
                 logger.debug(f"All keys failed for frame {frame_data['number']}, best score: {best_score}")
+            frame_data["best_score"] = best_score
         
         return frame_data
     
