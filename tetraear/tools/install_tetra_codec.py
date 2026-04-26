@@ -110,9 +110,22 @@ def download_codec():
         print(f"[*] Using existing codec archive: {CODEC_FILE}")
         return
 
-    print(f"[*] Downloading codec from ETSI")
+    print("[*] Downloading codec from ETSI...")
+
+
     try:
-        urllib.request.urlretrieve(URL, CODEC_FILE)
+        req = urllib.request.Request(
+            URL,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        with urllib.request.urlopen(req) as response, open(CODEC_FILE, "wb") as out_file:
+            shutil.copyfileobj(response, out_file)
+
+        print(f"[+] Download complete: {CODEC_FILE}")
+
     except Exception as e:
         fail(f"Download failed: {e}")
 
