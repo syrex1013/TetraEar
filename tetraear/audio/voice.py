@@ -20,6 +20,21 @@ import numpy as np
 logger = logging.getLogger(__name__)
 codec_logger = logging.getLogger("tetraear.codec")
 
+# Codec per-frame timeout. A too-aggressive timeout drops otherwise
+# decodable voice frames when the machine is slow or "cold" -- e.g. an
+# antivirus scanning the freshly built codec executables during the first
+# calls. Make it configurable via the TETRAEAR_CODEC_TIMEOUT environment
+# variable (in seconds), with a more tolerant default than before.
+def _codec_timeout() -> float:
+    try:
+        value = float(os.environ.get("TETRAEAR_CODEC_TIMEOUT", "15"))
+    except (TypeError, ValueError):
+        value = 15.0
+    return value if value > 0 else 15.0
+
+
+_CODEC_TIMEOUT = _codec_timeout()
+
 
 class VoiceProcessor:
     """
@@ -154,7 +169,11 @@ class VoiceProcessor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
-                timeout=5,
+                timeout=_CODEC_TIMEOUT,
+                # Run the codec hidden: under a no-console launcher (pythonw)
+                # each call would otherwise flash a console window per frame.
+                # The flag only exists on Windows; elsewhere it is 0 (no-op).
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             
             # Log codec process output
@@ -207,7 +226,11 @@ class VoiceProcessor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
-                timeout=5,
+                timeout=_CODEC_TIMEOUT,
+                # Run the codec hidden: under a no-console launcher (pythonw)
+                # each call would otherwise flash a console window per frame.
+                # The flag only exists on Windows; elsewhere it is 0 (no-op).
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
 
             if result2.stdout:
