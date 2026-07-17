@@ -1809,6 +1809,16 @@ class CaptureThread(QThread):
         self.pending_freq = None
         self.last_signal_time = 0
         self.encryption_keys = []  # List of keys for bruteforce
+        # CaptureThread uses self.tch_assembler in the voice-decode path
+        # but never created it here, so every voice frame raised
+        # AttributeError. Initialise it so the TCH path is used when
+        # available (falls back to None if the assembler is unavailable).
+        self.tch_assembler = None
+        try:
+            from tetraear.audio.tch import TchFrameAssembler
+            self.tch_assembler = TchFrameAssembler()
+        except Exception:
+            self.tch_assembler = None
         
     def set_keys(self, keys):
         """Set encryption keys for bruteforce attempts."""
@@ -2068,7 +2078,7 @@ class CaptureThread(QThread):
                                 else:
                                     frames = self.decoder.decode(
                                         demodulated,
-                                        confidences=getattr(self.signal_processor, "symbol_confidence", None),
+                                        confidences=getattr(self.processor, "symbol_confidence", None),
                                     )
                                     # Log when frames are found (but limit logging frequency)
                                     if len(frames) > 0:
@@ -2131,7 +2141,7 @@ class CaptureThread(QThread):
 
                                                 # Fallback to symbol-based extraction for legacy paths.
                                                 if codec_input is None and hasattr(self, 'demodulated_symbols') and self.demodulated_symbols is not None:
-                                                    if self.tch_assembler:
+                                                    if getattr(self, "tch_assembler", None):
                                                         codec_input = self.tch_assembler.add_burst(self.demodulated_symbols, frame.get('position'))
                                                     else:
                                                         codec_input = self._extract_voice_slot_from_symbols(frame, self.demodulated_symbols, self.samples_per_symbol)
