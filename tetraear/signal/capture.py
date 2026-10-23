@@ -27,8 +27,27 @@ import numpy as np
 import logging
 import warnings
 
-# Lazy import of RtlSdr to avoid DLL loading issues during import
+# Lazy import of RtlSdr to avoid DLL loading issues during import.
+# setuptools>=82 no longer ships pkg_resources; pyrtlsdr still imports it at
+# package load for version lookup only — stub it so RtlSdr remains usable.
+def _ensure_pkg_resources_stub():
+    try:
+        import pkg_resources  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import types
+    stub = types.ModuleType("pkg_resources")
+
+    def _require(*_args, **_kwargs):
+        raise Exception("pkg_resources stub")
+
+    stub.require = _require  # type: ignore[attr-defined]
+    sys.modules["pkg_resources"] = stub
+
+
 try:
+    _ensure_pkg_resources_stub()
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -37,7 +56,8 @@ try:
         )
         from rtlsdr import RtlSdr
     RTL_SDR_AVAILABLE = True
-except (ImportError, OSError):
+except (ImportError, OSError) as e:
+    logging.getLogger(__name__).debug("RTL-SDR import failed: %s", e)
     RTL_SDR_AVAILABLE = False
     RtlSdr = None  # type: ignore
 
@@ -47,7 +67,7 @@ logger = logging.getLogger(__name__)
 class RTLCapture:
     """Handles RTL-SDR device configuration and signal capture."""
     
-    def __init__(self, frequency=400e6, sample_rate=1.8e6, gain='auto'):
+    def __init__(self, frequency=400e6, sample_rate=1.8e6, gain='auto', device=None):
         """
         Initialize RTL-SDR capture.
         
@@ -55,11 +75,74 @@ class RTLCapture:
             frequency: Center frequency in Hz
             sample_rate: Sample rate in Hz
             gain: Gain setting ('auto' or numeric value)
+            device: Device selector — int (index), str (serial), or None (first available)
         """
         self.frequency = frequency
         self.sample_rate = sample_rate
         self.gain = gain
+        self.device = device
         self.sdr = None
+
+    @staticmethod
+    def list_devices():
+        """
+        List attached RTL-SDR devices.
+
+        Returns:
+            list[dict]: Each entry has ``index`` (int) and ``serial`` (str).
+            Empty list if the library is unavailable or no devices are found.
+        """
+        if not RTL_SDR_AVAILABLE or RtlSdr is None:
+            return []
+        try:
+            from ctypes import c_ubyte
+            from rtlsdr.librtlsdr import librtlsdr
+
+            num_devices = int(librtlsdr.rtlsdr_get_device_count())
+            devices = []
+            for i in range(num_devices):
+                serial = ""
+                try:
+                    bfr = (c_ubyte * 256)()
+                    r = librtlsdr.rtlsdr_get_device_usb_strings(i, None, None, bfr)
+                    if r == 0:
+                        serial = "".join(chr(b) for b in bfr if b > 0).strip()
+                except Exception as e:
+                    logger.debug("Could not read serial for RTL-SDR #%s: %s", i, e)
+                if not serial:
+                    try:
+                        name = librtlsdr.rtlsdr_get_device_name(i)
+                        if name:
+                            serial = name.decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+                devices.append({"index": i, "serial": serial})
+            return devices
+        except Exception as e:
+            logger.error(f"Failed to list RTL-SDR devices: {e}")
+            # Fallback: pyrtlsdr helper (fails entirely if any device errors)
+            try:
+                serials = RtlSdr.get_device_serial_addresses()
+                return [
+                    {"index": i, "serial": (serial or "").strip()}
+                    for i, serial in enumerate(serials)
+                ]
+            except Exception as e2:
+                logger.error(f"RTL-SDR device listing fallback failed: {e2}")
+                return []
+
+    def _open_sdr(self):
+        """Open the RtlSdr handle for the configured device selector."""
+        if self.device is None:
+            return RtlSdr()
+        if isinstance(self.device, int):
+            return RtlSdr(device_index=self.device)
+        if isinstance(self.device, str):
+            serial = self.device.strip()
+            if not serial:
+                return RtlSdr()
+            return RtlSdr(serial_number=serial)
+        raise TypeError(f"Unsupported device selector type: {type(self.device)!r}")
         
     def open(self):
         """
@@ -76,7 +159,7 @@ class RTLCapture:
             return False
         
         try:
-            self.sdr = RtlSdr()
+            self.sdr = self._open_sdr()
             
             # Validate and round sample rate to nearest valid RTL-SDR rate
             # Valid rates: 0.225, 0.9, 1.024, 1.536, 1.8, 1.92, 2.048, 2.4, 2.56, 2.88, 3.2 MHz
@@ -101,12 +184,11 @@ class RTLCapture:
                 # Older librtlsdr.dll doesn't have this function
                 pass
             
-            # Try to get serial, but don't fail if we can't
-            try:
-                serial = self.sdr.get_device_serial_addresses()
-                logger.info(f"RTL-SDR opened: {serial}")
-            except Exception:
-                logger.info("RTL-SDR opened (serial read not available)")
+            if self.device is None:
+                device_desc = "default (first available)"
+            else:
+                device_desc = f"{self.device!r}"
+            logger.info(f"RTL-SDR opened (device={device_desc})")
             
             logger.info(f"Frequency: {self.frequency/1e6:.2f} MHz")
             logger.info(f"Sample rate: {self.sample_rate/1e6:.2f} MHz")
@@ -115,7 +197,10 @@ class RTLCapture:
             return True
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"Failed to open RTL-SDR: {e}")
+            if self.device is not None:
+                logger.error(f"Failed to open RTL-SDR device {self.device!r}: {e}")
+            else:
+                logger.error(f"Failed to open RTL-SDR: {e}")
             
             # Provide helpful error messages
             if "LIBUSB_ERROR_ACCESS" in error_msg or "Access denied" in error_msg:

@@ -23,12 +23,58 @@ class TestRTLCapture:
         assert capture.frequency == 400e6
         assert capture.sample_rate == 2.4e6
         assert capture.gain == 50.0
+        assert capture.device is None
         assert capture.sdr is None
     
     def test_capture_initialization_auto_gain(self):
         """Test capture initialization with auto gain."""
         capture = RTLCapture(gain='auto')
         assert capture.gain == 'auto'
+
+    def test_capture_initialization_with_device(self):
+        """Test capture initialization with device selector."""
+        capture = RTLCapture(device=1)
+        assert capture.device == 1
+        capture_serial = RTLCapture(device="00000001")
+        assert capture_serial.device == "00000001"
+
+    def test_list_devices(self):
+        """Test listing RTL-SDR devices."""
+        import tetraear.signal.capture as capture_module
+
+        original_available = capture_module.RTL_SDR_AVAILABLE
+        try:
+            capture_module.RTL_SDR_AVAILABLE = True
+            mock_lib = MagicMock()
+            mock_lib.rtlsdr_get_device_count.return_value = 2
+
+            def fake_usb_strings(index, manufact, product, serial_bfr):
+                serial = b"00000001" if index == 0 else b"00000002"
+                for i, b in enumerate(serial):
+                    serial_bfr[i] = b
+                for i in range(len(serial), 256):
+                    serial_bfr[i] = 0
+                return 0
+
+            mock_lib.rtlsdr_get_device_usb_strings.side_effect = fake_usb_strings
+            with patch("rtlsdr.librtlsdr.librtlsdr", mock_lib):
+                devices = RTLCapture.list_devices()
+            assert devices == [
+                {"index": 0, "serial": "00000001"},
+                {"index": 1, "serial": "00000002"},
+            ]
+        finally:
+            capture_module.RTL_SDR_AVAILABLE = original_available
+
+    def test_list_devices_unavailable(self):
+        """Test list_devices when RTL-SDR library is unavailable."""
+        import tetraear.signal.capture as capture_module
+        original_available = capture_module.RTL_SDR_AVAILABLE
+        try:
+            capture_module.RTL_SDR_AVAILABLE = False
+            assert RTLCapture.list_devices() == []
+        finally:
+            capture_module.RTL_SDR_AVAILABLE = original_available
     
     def test_open_success(self):
         """Test successful device opening."""
@@ -46,9 +92,42 @@ class TestRTLCapture:
                 result = capture.open()
                 assert result is True
                 assert capture.sdr is not None
+                mock_rtl.assert_called_once_with()
                 # Check that properties were set (mocked object stores values)
                 assert hasattr(mock_sdr, 'sample_rate')
                 assert hasattr(mock_sdr, 'center_freq')
+        finally:
+            capture_module.RTL_SDR_AVAILABLE = original_available
+
+    def test_open_with_device_index(self):
+        """Test opening a specific device by index."""
+        import tetraear.signal.capture as capture_module
+        capture = RTLCapture(device=1)
+        original_available = capture_module.RTL_SDR_AVAILABLE
+        try:
+            capture_module.RTL_SDR_AVAILABLE = True
+            with patch.object(capture_module, 'RtlSdr') as mock_rtl:
+                mock_sdr = MagicMock()
+                mock_rtl.return_value = mock_sdr
+                result = capture.open()
+                assert result is True
+                mock_rtl.assert_called_once_with(device_index=1)
+        finally:
+            capture_module.RTL_SDR_AVAILABLE = original_available
+
+    def test_open_with_serial_number(self):
+        """Test opening a specific device by serial number."""
+        import tetraear.signal.capture as capture_module
+        capture = RTLCapture(device="00000001")
+        original_available = capture_module.RTL_SDR_AVAILABLE
+        try:
+            capture_module.RTL_SDR_AVAILABLE = True
+            with patch.object(capture_module, 'RtlSdr') as mock_rtl:
+                mock_sdr = MagicMock()
+                mock_rtl.return_value = mock_sdr
+                result = capture.open()
+                assert result is True
+                mock_rtl.assert_called_once_with(serial_number="00000001")
         finally:
             capture_module.RTL_SDR_AVAILABLE = original_available
     

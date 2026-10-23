@@ -339,7 +339,8 @@ class SettingsManager:
         "zoom_level": 1.0,
         "noise_floor": -85,
         "theme": "dark",
-        "expected_mcc": None
+        "expected_mcc": None,
+        "sdr_device": None,
     }
     
     def __init__(self, filename="settings.json"):
@@ -442,6 +443,38 @@ class SettingsDialog(QDialog):
         
         rec_group.setLayout(rec_layout)
         layout.addWidget(rec_group)
+
+        # SDR Settings
+        sdr_group = QGroupBox("SDR")
+        sdr_layout = QVBoxLayout()
+        sdr_layout.addWidget(QLabel("Device:"))
+        self.sdr_device_combo = QComboBox()
+        self.sdr_device_combo.addItem("Default (first available)", None)
+        try:
+            from tetraear.signal.capture import RTLCapture
+            for dev in RTLCapture.list_devices():
+                serial = dev.get("serial") or ""
+                idx = int(dev.get("index", 0))
+                label = f"#{idx} — {serial}" if serial else f"#{idx}"
+                # Persist by index: stock dongles often share the same serial
+                self.sdr_device_combo.addItem(label, idx)
+            current_sdr = self.settings.get("sdr_device", None)
+            if current_sdr is not None:
+                # Match index, or fall back to first device with that serial
+                index = self.sdr_device_combo.findData(current_sdr)
+                if index < 0 and isinstance(current_sdr, str):
+                    for i in range(self.sdr_device_combo.count()):
+                        text = self.sdr_device_combo.itemText(i)
+                        if current_sdr in text:
+                            index = i
+                            break
+                if index >= 0:
+                    self.sdr_device_combo.setCurrentIndex(index)
+        except Exception as e:
+            logger.error(f"Failed to query RTL-SDR devices: {e}")
+        sdr_layout.addWidget(self.sdr_device_combo)
+        sdr_group.setLayout(sdr_layout)
+        layout.addWidget(sdr_group)
         
         # Audio Settings
         audio_group = QGroupBox("Audio")
@@ -505,6 +538,7 @@ class SettingsDialog(QDialog):
     def save_settings(self):
         self.settings.set("save_silence", self.save_silence_cb.isChecked())
         self.settings.set("export_mp3", self.export_mp3_cb.isChecked())
+        self.settings.set("sdr_device", self.sdr_device_combo.currentData())
         self.settings.set("audio_device", self.audio_device_combo.currentData())
         self.settings.set("theme", self.theme_combo.currentText())
         self.settings.save()
@@ -1642,8 +1676,12 @@ class ScannerDialog(QDialog):
             # Import RTLCapture
             from tetraear.signal.capture import RTLCapture
             
-            # Create RTL capture instance
-            rtl = RTLCapture(frequency=start, sample_rate=2.4e6, gain=50)
+            # Create RTL capture instance (use SDR device from parent settings if available)
+            sdr_device = None
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "settings_manager"):
+                sdr_device = parent.settings_manager.get("sdr_device", None)
+            rtl = RTLCapture(frequency=start, sample_rate=2.4e6, gain=50, device=sdr_device)
             if not rtl.open():
                 QMessageBox.warning(self, "Error", "Failed to open RTL-SDR device")
                 return
@@ -1806,6 +1844,7 @@ class CaptureThread(QThread):
         self.gain = 50  # Default gain per user specification
         self.auto_decrypt = True
         self.monitor_raw = False  # New flag
+        self.sdr_device = None  # int index, str serial, or None (first available)
         self.pending_freq = None
         self.last_signal_time = 0
         self.encryption_keys = []  # List of keys for bruteforce
@@ -1870,7 +1909,8 @@ class CaptureThread(QThread):
             self.capture = RTLCapture(
                 frequency=self.frequency,
                 sample_rate=self.sample_rate,
-                gain=self.gain
+                gain=self.gain,
+                device=self.sdr_device,
             )
             
             if not self.capture.open():
@@ -3834,6 +3874,7 @@ class ModernTetraGUI(QMainWindow):
             self.capture_thread.frequency = freq_hz
             self.capture_thread.gain = gain
             self.capture_thread.sample_rate = sample_rate
+            self.capture_thread.sdr_device = self.settings_manager.get("sdr_device", None)
             self.capture_thread.auto_decrypt = self.auto_decrypt_cb.isChecked()
             self.capture_thread.set_monitor_raw(self.monitor_raw_cb.isChecked())
             if self.encryption_keys:
@@ -5321,6 +5362,22 @@ def main():
     """Main entry point with CLI argument support."""
     import argparse
     
+    def _parse_sdr_device(value):
+        """Parse -d/--device: integer index or serial string.
+
+        Plain small integers without leading zeros (0, 1, 2, …) are indexes.
+        Values with leading zeros (e.g. 00000001) are treated as serials.
+        """
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        # Index: 0 or 1–999 without leading zeros
+        if text == "0" or (text.isdigit() and not text.startswith("0") and len(text) <= 3):
+            return int(text)
+        return text
+
     parser = argparse.ArgumentParser(
         description='TETRA Decoder Pro - Modern GUI with live voice decoding',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -5331,6 +5388,8 @@ Examples:
   %(prog)s -f 392.225 --auto-start      # Auto-start capture
   %(prog)s -f 392.225 --auto-start -m   # Auto-start with audio monitoring
   %(prog)s -f 392.225 -g 35 -s 1.8      # Set frequency, gain, sample rate
+  %(prog)s -d 1 --no-gui -f 392.225     # Use RTL-SDR device index 1
+  %(prog)s -d 00000001 -f 392.225       # Use RTL-SDR by serial number
   %(prog)s --scan 390 392               # Scan range first, then launch GUI
         '''
     )
@@ -5341,6 +5400,8 @@ Examples:
                         help='RF gain in dB (default: 50.0)')
     parser.add_argument('-s', '--sample-rate', type=float, default=2.4,
                         help='Sample rate in MHz (default: 2.4)')
+    parser.add_argument('-d', '--device', type=_parse_sdr_device, default=None,
+                        help='RTL-SDR device index (int) or serial number (str)')
     parser.add_argument('--auto-start', action='store_true',
                         help='Automatically start capture on launch')
     parser.add_argument('-m', '--monitor-audio', action='store_true',
@@ -5371,7 +5432,12 @@ Examples:
         start_freq = args.scan[0] * 1e6
         stop_freq = args.scan[1] * 1e6
         
-        rtl = RTLCapture(frequency=start_freq, sample_rate=2.4e6, gain=50)
+        rtl = RTLCapture(
+            frequency=start_freq,
+            sample_rate=2.4e6,
+            gain=50,
+            device=args.device,
+        )
         if rtl.open():
             scanner = FrequencyScanner(
                 rtl, 
@@ -5417,11 +5483,14 @@ Examples:
         print(f"Frequency: {args.frequency} MHz")
         print(f"Gain: {args.gain} dB")
         print(f"Sample Rate: {args.sample_rate} MHz")
+        if args.device is not None:
+            print(f"SDR Device: {args.device}")
         
         capture_thread = CaptureThread()
         capture_thread.frequency = args.frequency * 1e6
         capture_thread.gain = args.gain
         capture_thread.sample_rate = args.sample_rate * 1e6
+        capture_thread.sdr_device = args.device
         capture_thread.auto_decrypt = args.auto_decrypt
         
         listener = CLITetraListener(capture_thread)
@@ -5444,6 +5513,10 @@ Examples:
         window = ModernTetraGUI()
         
         # Apply CLI arguments
+        if args.device is not None:
+            window.settings_manager.set("sdr_device", args.device)
+            logger.info(f"Set SDR device to {args.device!r}")
+
         if args.frequency:
             window.freq_input.setText(f"{args.frequency:.3f}")
             logger.info(f"Set frequency to {args.frequency:.3f} MHz")
